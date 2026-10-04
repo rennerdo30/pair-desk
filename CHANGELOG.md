@@ -4,6 +4,15 @@ All notable changes to Pair Desk. The format follows [Keep a Changelog](https://
 and the project uses [Semantic Versioning](https://semver.org/). The version lives in
 `pair_desk/__init__.py`, `.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json`.
 
+## [Unreleased]
+
+### Fixed
+
+- Large desks and concurrent agents: page issues before loading counts, share facet/search work,
+  use bounded WAL readers and commit-aware caches, index issue commands, and return compact
+  list metadata to the UI and MCP. HTTP reads support ETags; attachments stream with bounded
+  memory. The UI cancels superseded list requests and skips unchanged redraws.
+
 ## [1.6.6] - 2026-10-02
 
 ### Fixed

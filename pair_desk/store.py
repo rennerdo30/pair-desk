@@ -4,9 +4,9 @@ One SQLite file (`desk.sqlite`) plus an `attachments/` folder inside the data fo
 server, the CLI and the MCP server all go through this module; there is no second
 implementation of the rules.
 
-Thread safety: one connection per Store, guarded by a re-entrant lock. The server shares one
-Store across its request threads. Separate processes (CLI next to a running server) are safe
-through SQLite WAL mode and `BEGIN IMMEDIATE` write transactions.
+Thread safety: a locked writer and a bounded pool of read connections. Multi-query reads use
+one WAL snapshot; readers do not wait for the writer's lock. Read caches are bounded and
+validated with a dedicated connection's data_version, including commits by CLI/MCP processes.
 """
 
 from __future__ import annotations
@@ -16,11 +16,15 @@ import binascii
 import datetime as _dt
 import json
 import mimetypes
+import random
 import re
 import sqlite3
 import threading
+import time
 import uuid
+from collections import OrderedDict
 from contextlib import contextmanager
+from functools import wraps
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
@@ -179,6 +183,17 @@ MIGRATIONS = (
 MIGRATION_INDEXES = (
     "CREATE INDEX IF NOT EXISTS issues_parent ON issues(parent_id)",
     "CREATE INDEX IF NOT EXISTS issues_merged ON issues(merged_into)",
+)
+
+# Additive indexes only: no schema version or stored data changes. Installed after migrations
+# even on an already-current desk (older releases can still open the same database).
+PERFORMANCE_INDEXES = (
+    "CREATE INDEX IF NOT EXISTS commands_issue ON commands(issue_id, id DESC)",
+    "CREATE INDEX IF NOT EXISTS attachments_comment ON attachments(comment_id)",
+    "CREATE INDEX IF NOT EXISTS comments_verdict ON comments(issue_id, id DESC) WHERE verdict IS NOT NULL",
+    "CREATE INDEX IF NOT EXISTS issues_children ON issues(parent_id, status) WHERE merged_into IS NULL",
+    # Cover the facet inputs instead of re-reading the large issue body/plan for every group.
+    "CREATE INDEX IF NOT EXISTS issues_facets ON issues(project_id, status, kind, priority, area, size, milestone, merged_into, location)",
 )
 
 # -- plans ------------------------------------------------------------------------------------
@@ -771,7 +786,33 @@ def read_changes(conn: sqlite3.Connection, cursor: dict, limit: int = 500) -> di
 
 # ---------------------------------------------------------------------------------------------
 
+def cached_read(fn):
+    """Cache JSON-shaped read results without exposing mutable cached objects to callers."""
+    @wraps(fn)
+    def read(self, *args, **kwargs):
+        # Nested reads must share the caller's snapshot, rather than borrow a result from
+        # another snapshot (or wait for a cache flight while occupying a pooled reader).
+        if getattr(self._local, "writer", False) or getattr(self._local, "reader", None) is not None:
+            return fn(self, *args, **kwargs)
+        key = (fn.__name__, json.dumps([args, kwargs], sort_keys=True, ensure_ascii=False))
+        loaded = []
+        def load():
+            with self._snapshot():
+                result = fn(self, *args, **kwargs)
+                loaded.append(result)
+                return result
+        payload = self.cached_json(key, load)
+        # A miss already has a fresh caller-owned object; do not deserialize it again.
+        return loaded[0] if loaded else json.loads(payload)
+    return read
+
+
 class Store:
+    MAX_READERS = 8
+    WRITE_TIMEOUT = 10.0
+    CACHE_BYTES = 16 * 1024 * 1024
+    CACHE_ENTRIES = 64
+
     def __init__(self, data_dir: str | Path, clock: Callable[[], _dt.datetime] | None = None):
         self.data_dir = Path(data_dir)
         self.data_dir.mkdir(parents=True, exist_ok=True)
@@ -780,6 +821,15 @@ class Store:
         self.db_path = self.data_dir / "desk.sqlite"
         self.clock = clock or utc_now
         self._lock = threading.RLock()
+        self._local = threading.local()
+        self._readers_condition = threading.Condition()
+        self._readers: list[sqlite3.Connection] = []
+        self._available: list[sqlite3.Connection] = []
+        self._closed = False
+        self._cache_lock = threading.RLock()
+        self._cache: OrderedDict = OrderedDict()
+        self._cache_bytes = 0
+        self._flights: dict[tuple, threading.Event] = {}
         self.conn = sqlite3.connect(self.db_path, check_same_thread=False, isolation_level=None, timeout=10)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA journal_mode=WAL")
@@ -789,6 +839,27 @@ class Store:
             # executescript commits on its own, so it runs outside an explicit transaction.
             self.conn.executescript(SCHEMA)
         self._migrate()
+        for sql in PERFORMANCE_INDEXES:
+            try:
+                self.conn.execute(sql)
+            except sqlite3.OperationalError as e:
+                # Optional optimization, not a data migration. A read-only agent can still
+                # read a current schema before the write-capable server installs indexes.
+                if (getattr(e, "sqlite_errorcode", 0) & 255) == sqlite3.SQLITE_READONLY:
+                    break
+                raise
+        self._revision_conn = self._open_reader()
+        self._data_version = None
+        self._revision = 0
+        self._revision_time = None
+        self._cache_deadline = None
+
+    def _open_reader(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(self.db_path.resolve().as_uri() + "?mode=ro", uri=True,
+                               check_same_thread=False, isolation_level=None, timeout=10)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA query_only=ON")
+        return conn
 
     def _migrate(self) -> None:
         """Add the columns later versions introduced. Runs in one write transaction and re-checks
@@ -796,8 +867,11 @@ class Store:
         both try to add the same column."""
         def missing(conn):
             out = []
+            columns = {}
             for table, column, decl in MIGRATIONS:
-                have = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
+                if table not in columns:
+                    columns[table] = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
+                have = columns[table]
                 if column not in have:
                     out.append((table, column, decl))
             return out
@@ -831,6 +905,18 @@ class Store:
             c.execute("UPDATE issues SET location=? WHERE id=?", (json.dumps(loc, ensure_ascii=False), row["id"]))
 
     def close(self) -> None:
+        with self._readers_condition:
+            self._closed = True
+            self._readers_condition.notify_all()
+            # Callers stop dispatching new work before closing; finish outstanding reads.
+            self._readers_condition.wait_for(lambda: len(self._available) == len(self._readers))
+            for conn in self._readers:
+                conn.close()
+            self._readers.clear()
+            self._available.clear()
+        with self._cache_lock:
+            self._revision_conn.close()
+            self._cache.clear()
         with self._lock:
             self.conn.close()
 
@@ -848,7 +934,25 @@ class Store:
     @contextmanager
     def _tx(self):
         with self._lock:
-            self.conn.execute("BEGIN IMMEDIATE")
+            # SQLite's default busy handler backs off to 100ms sleeps. With many CLI/MCP
+            # writers that creates long retry tails even though each commit is very short.
+            # Keep the same overall deadline, but retry reservation with short jittered
+            # waits; after reservation the normal statement timeout is restored.
+            timeout = self.conn.execute("PRAGMA busy_timeout").fetchone()[0]
+            deadline = time.monotonic() + self.WRITE_TIMEOUT
+            self.conn.execute("PRAGMA busy_timeout=5")
+            try:
+                while True:
+                    try:
+                        self.conn.execute("BEGIN IMMEDIATE")
+                        break
+                    except sqlite3.OperationalError as e:
+                        if (getattr(e, "sqlite_errorcode", 0) & 255) != sqlite3.SQLITE_BUSY or time.monotonic() >= deadline:
+                            raise
+                        time.sleep(random.uniform(.001, .004))
+            finally:
+                self.conn.execute(f"PRAGMA busy_timeout={timeout}")
+            self._local.writer = True
             try:
                 yield self.conn
             except BaseException:
@@ -856,10 +960,122 @@ class Store:
                 raise
             else:
                 self.conn.execute("COMMIT")
+            finally:
+                self._local.writer = False
+
+    @contextmanager
+    def _reader(self):
+        if getattr(self._local, "writer", False):
+            yield self.conn
+            return
+        current = getattr(self._local, "reader", None)
+        if current is not None:
+            yield current
+            return
+        with self._readers_condition:
+            while not self._available and len(self._readers) >= self.MAX_READERS and not self._closed:
+                self._readers_condition.wait()
+            if self._closed:
+                raise sqlite3.ProgrammingError("Store is closed")
+            if self._available:
+                conn = self._available.pop()
+            else:
+                conn = self._open_reader()
+                self._readers.append(conn)
+        try:
+            yield conn
+        finally:
+            with self._readers_condition:
+                self._available.append(conn)
+                self._readers_condition.notify_all()
+
+    @contextmanager
+    def _snapshot(self):
+        if getattr(self._local, "reader", None) is not None or getattr(self._local, "writer", False):
+            yield
+            return
+        with self._reader() as conn:
+            conn.execute("BEGIN")
+            self._local.reader = conn
+            try:
+                yield
+            finally:
+                try:
+                    conn.execute("ROLLBACK")  # read-only transaction, release the WAL snapshot
+                finally:
+                    self._local.reader = None
+
+    def read_revision(self) -> int:
+        """A cache token that changes for *every* committed write, even by another process.
+
+        data_version values are connection-local: always read the same observer connection.
+        Never hold the writer lock here (it may be waiting for another process to commit).
+        """
+        with self._cache_lock:
+            data_version = self._revision_conn.execute("PRAGMA data_version").fetchone()[0]
+            now = self.now()
+            due = self._cache_deadline is not None and self._cache_deadline <= now
+            backwards = self._revision_time is not None and now < self._revision_time
+            if data_version != self._data_version or due or backwards:
+                self._cache.clear()
+                self._cache_bytes = 0
+                self._cache_deadline = None
+                self._data_version = data_version
+                self._revision += 1
+            self._revision_time = now
+            return self._revision
+
+    def _command_cache_deadline(self, commands: list[dict]) -> None:
+        """Commands expire with the clock, even when nothing commits. Invalidate every layer
+        of the cache at the earliest pending command's expiry (including HTTP/MCP JSON)."""
+        pending = [c["expires_at"] for c in commands if c["state"] == "pending"]
+        if pending:
+            with self._cache_lock:
+                deadline = min(pending)
+                if self._cache_deadline is None or deadline < self._cache_deadline:
+                    self._cache_deadline = deadline
+
+    def cached_json(self, key: tuple, load: Callable[[], Any]) -> bytes:
+        """Bounded LRU with single-flight misses; a concurrent commit prevents publication.
+
+        This also caches the HTTP list's serialized response, while MCP/CLI use the same
+        invalidation rules. No mtime/timestamp heuristic can miss same-second writes.
+        """
+        while True:
+            revision = self.read_revision()
+            flight_key = (revision, key)
+            with self._cache_lock:
+                if revision != self._revision:
+                    continue
+                payload = self._cache.get(key)
+                if payload is not None:
+                    self._cache.move_to_end(key)
+                    return payload
+                event = self._flights.get(flight_key)
+                if event is None:
+                    event = self._flights[flight_key] = threading.Event()
+                    break
+            event.wait()
+        try:
+            # The loader supplies its snapshot. HTTP loaders call cached store methods;
+            # holding a pooled connection while waiting for their flight could deadlock.
+            payload = json.dumps(load(), ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+            with self._cache_lock:
+                if self.read_revision() == revision and len(payload) <= self.CACHE_BYTES:
+                    self._cache[key] = payload
+                    self._cache_bytes += len(payload)
+                    while self._cache_bytes > self.CACHE_BYTES or len(self._cache) > self.CACHE_ENTRIES:
+                        _, old = self._cache.popitem(last=False)
+                        self._cache_bytes -= len(old)
+            return payload
+        finally:
+            with self._cache_lock:
+                self._flights.pop(flight_key, None)
+                event.set()
 
     def _read(self, sql: str, params: Iterable[Any] = ()) -> list[sqlite3.Row]:
-        with self._lock:
-            return self.conn.execute(sql, tuple(params)).fetchall()
+        with self._reader() as conn:
+            return conn.execute(sql, tuple(params)).fetchall()
 
     def _log(self, conn, issue_id: int, actor: str, action: str, detail: dict, at: str) -> None:
         conn.execute(
@@ -965,6 +1181,7 @@ class Store:
     def get_project(self, slug: str) -> dict:
         return self._project_dict(self._project_row(slug))
 
+    @cached_read
     def list_projects(self) -> list[dict]:
         out = []
         for row in self._read("SELECT * FROM projects ORDER BY name COLLATE NOCASE"):
@@ -979,6 +1196,7 @@ class Store:
             counts[r["status"]] = r["n"]
         return counts
 
+    @cached_read
     def project_overview(self, slug: str) -> dict:
         row = self._project_row(slug)
         pid = row["id"]
@@ -1043,13 +1261,13 @@ class Store:
         return f"{row['prefix']}-{row['number']}"
 
     @staticmethod
-    def _issue_dict(row: sqlite3.Row) -> dict:
+    def _issue_dict(row: sqlite3.Row, summary: bool = False) -> dict:
         d = {
             "id": f"{row['prefix']}-{row['number']}",
             "number": row["number"],
             "project": row["slug"],
             "title": row["title"],
-            "body": row["body"],
+            "body": "" if summary else row["body"],
             "kind": row["kind"],
             "status": row["status"],
             "priority": row["priority"],
@@ -1077,6 +1295,9 @@ class Store:
         for extra in ("comment_count", "attachment_count", "last_verdict"):
             if extra in keys:
                 d[extra] = row[extra]
+        if summary:
+            d.pop("body")
+            d.pop("plan")
         return d
 
     def _validate_issue_fields(self, data: dict, creating: bool) -> dict:
@@ -1251,6 +1472,7 @@ class Store:
                    " lower(i.area)='', lower(i.area), i.number",
     }
 
+    @cached_read
     def list_issues(self, slug: str, filters: dict | None = None) -> dict:
         filters = dict(filters or {})
         project = self._project_row(slug)
@@ -1265,42 +1487,85 @@ class Store:
             raise Invalid("limit and offset must be numbers") from None
         limit = max(1, min(limit, 5000))
         offset = max(0, offset)
+        summary = str(filters.get("summary") or "").strip().lower() in ("1", "true", "yes")
         where, params = self._facet_where(pid, filters)
         base = "FROM issues i JOIN projects p ON p.id=i.project_id WHERE " + where
-        total = self._read("SELECT COUNT(*) n " + base, params)[0]["n"]
+        # Sort/page narrow ids FIRST. SQLite otherwise evaluates correlated counts for many
+        # rows that the LIMIT later discards, and sorts full bodies/plans in its temp b-tree.
+        # Aggregate metadata once for just this page, with indexed joins into child tables.
+        order = self.SORTS[sort] + ", i.number DESC"
+        # Older system SQLite libraries support CTEs but not the explicit 3.35 hint.
+        # Reused CTEs still share work there; do not raise the runtime requirement.
+        materialized = "MATERIALIZED " if sqlite3.sqlite_version_info >= (3, 35, 0) else ""
+        columns = "i.*" if not summary else ", ".join("i." + name for name in (
+            "id", "project_id", "number", "title", "kind", "status", "priority", "area", "tags", "location",
+            "source", "external_ref", "size", "milestone", "build", "created_at", "updated_at", "closed_at", "plan"))
         rows = self._read(
-            f"SELECT {self.ISSUE_COLUMNS},"
-            " (SELECT COUNT(*) FROM comments c WHERE c.issue_id=i.id) comment_count,"
-            " (SELECT COUNT(*) FROM attachments a WHERE a.issue_id=i.id) attachment_count,"
-            " (SELECT verdict FROM comments c WHERE c.issue_id=i.id AND verdict IS NOT NULL"
-            "  ORDER BY c.id DESC LIMIT 1) last_verdict "
-            + base + " ORDER BY " + self.SORTS[sort] + ", i.number DESC LIMIT ? OFFSET ?",
+            "WITH page AS " + materialized + "(SELECT i.id " + base + " ORDER BY " + order + " LIMIT ? OFFSET ?),"
+            " cm AS (SELECT c.issue_id, COUNT(*) n, MAX(CASE WHEN c.verdict IS NOT NULL THEN c.id END) verdict_id"
+            " FROM page CROSS JOIN comments c ON page.id=c.issue_id GROUP BY c.issue_id),"
+            " att AS (SELECT a.issue_id, COUNT(*) n FROM page CROSS JOIN attachments a ON page.id=a.issue_id GROUP BY a.issue_id),"
+            " ch AS (SELECT c.parent_id, COUNT(*) n, SUM(c.status IN ('passed','closed')) done"
+            " FROM page CROSS JOIN issues c ON page.id=c.parent_id WHERE c.merged_into IS NULL GROUP BY c.parent_id)"
+            " SELECT " + columns + ", p.prefix, p.slug, par.number parent_number, merged.number merged_number,"
+            " COALESCE(ch.n,0) child_count, COALESCE(ch.done,0) child_done,"
+            " COALESCE(cm.n,0) comment_count, COALESCE(att.n,0) attachment_count, verdict.verdict last_verdict"
+            " FROM page JOIN issues i ON i.id=page.id JOIN projects p ON p.id=i.project_id"
+            " LEFT JOIN issues par ON par.id=i.parent_id LEFT JOIN issues merged ON merged.id=i.merged_into"
+            " LEFT JOIN ch ON ch.parent_id=i.id LEFT JOIN cm ON cm.issue_id=i.id LEFT JOIN att ON att.issue_id=i.id"
+            " LEFT JOIN comments verdict ON verdict.id=cm.verdict_id ORDER BY " + order,
             params + [limit, offset])
-        counts: dict[str, dict[str, int]] = {}
-        for facet in ("status", "kind", "priority", "area", "seed", "size", "milestone"):
-            fw, fp = self._facet_where(pid, filters, skip=facet)
-            column = "json_extract(i.location, '$.seed')" if facet == "seed" else f"i.{facet}"
-            fr = self._read(f"SELECT {column} v, COUNT(*) n FROM issues i JOIN projects p ON p.id=i.project_id "
-                            f"WHERE {fw} GROUP BY {column}", fp)
-            if facet == "seed":
-                counts[facet] = {str(r["v"]): r["n"] for r in fr if r["v"] is not None}
-            elif facet in ("size", "milestone"):
-                counts[facet] = {r["v"]: r["n"] for r in fr if r["v"]}
-            else:
-                counts[facet] = {r["v"]: r["n"] for r in fr}
+        facets = ("status", "kind", "priority", "area", "seed", "size", "milestone")
+        # Search/source/tag/ref/since apply to every facet. Evaluate them once instead of
+        # rescanning issue bodies and comments eight times. Each facet still ignores ONLY
+        # its own filter (and merged counts retain their special status/merged semantics).
+        common = {k: v for k, v in filters.items() if k not in (*facets, "merged")}
+        cw, cp = self._facet_where(pid, common)
+        varying = {k: v for k, v in filters.items() if k in (*facets, "merged")}
+        tw, tp = self._facet_where(pid, varying)
+        parts = ["SELECT 'total' facet, NULL v, COUNT(*) n FROM candidates i WHERE " + tw]
+        count_params = cp + tp
+        for facet in facets:
+            fw, fp = self._facet_where(pid, varying, skip=facet)
+            column = "i.seed" if facet == "seed" else f"i.{facet}"
+            # The CTE has extracted the seed already; predicates use that same value.
+            fw = fw.replace("json_extract(i.location, '$.seed')", "i.seed")
+            parts.append(f"SELECT '{facet}' facet, {column} v, COUNT(*) n FROM candidates i WHERE {fw} GROUP BY {column}")
+            count_params.extend(fp)
+        parts[0] = parts[0].replace("json_extract(i.location, '$.seed')", "i.seed")
         # Merged issues are always closed: the count ignores the status filter, or the default view reads 0.
-        mw, mp = self._facet_where(pid, {k: v for k, v in filters.items() if k not in ("merged", "status")})
-        counts["merged"] = self._read("SELECT COUNT(*) n FROM issues i JOIN projects p ON p.id=i.project_id "
-                                      f"WHERE {mw} AND i.merged_into IS NOT NULL", mp)[0]["n"]
+        mw, mp = self._facet_where(pid, {k: v for k, v in varying.items() if k not in ("merged", "status")})
+        mw = mw.replace("json_extract(i.location, '$.seed')", "i.seed")
+        parts.append(f"SELECT 'merged' facet, NULL v, COUNT(*) n FROM candidates i WHERE {mw} AND i.merged_into IS NOT NULL")
+        count_params.extend(mp)
+        counted = self._read(
+            "WITH candidates AS " + materialized + "(SELECT i.project_id, i.status, i.kind, i.priority, i.area,"
+            " i.size, i.milestone, i.merged_into, json_extract(i.location, '$.seed') seed "
+            "FROM issues i JOIN projects p ON p.id=i.project_id WHERE " + cw + ") " + " UNION ALL ".join(parts),
+            count_params)
+        counts = {facet: {} for facet in facets}
+        total = 0
+        for r in counted:
+            facet, value = r["facet"], r["v"]
+            if facet == "total":
+                total = r["n"]
+            elif facet == "merged":
+                counts["merged"] = r["n"]
+            elif facet == "seed":
+                if value is not None:
+                    counts[facet][str(value)] = r["n"]
+            elif facet not in ("size", "milestone") or value:
+                counts[facet][value] = r["n"]
         return {
             "project": project["slug"],
             "total": total,
             "limit": limit,
             "offset": offset,
-            "issues": [self._issue_dict(r) for r in rows],
+            "issues": [self._issue_dict(r, summary=summary) for r in rows],
             "counts": counts,
         }
 
+    @cached_read
     def get_issue(self, key: str, full: bool = True, follow: bool = True) -> dict:
         """One issue. A merged issue's id redirects to the issue it was merged into (the result
         then carries `redirected_from`); `follow=False` returns the merged issue itself."""
@@ -1340,17 +1605,21 @@ class Store:
         d["children"] = [
             {"id": self._key(r), "title": r["title"], "status": r["status"], "kind": r["kind"],
              "priority": r["priority"], "plan_progress": plan_progress(parse_plan(r["plan"]))}
-            for r in self._read(f"SELECT {self.ISSUE_COLUMNS} FROM issues i JOIN projects p ON p.id=i.project_id "
+            for r in self._read("SELECT i.number, p.prefix, i.title, i.status, i.kind, i.priority, i.plan "
+                                "FROM issues i JOIN projects p ON p.id=i.project_id "
                                 "WHERE i.parent_id=? AND i.merged_into IS NULL ORDER BY i.number", (iid,))]
         d["merged_sources"] = [
             {"id": self._key(r), "title": r["title"], "merged_at": r["updated_at"]}
-            for r in self._read(f"SELECT {self.ISSUE_COLUMNS} FROM issues i JOIN projects p ON p.id=i.project_id "
+            for r in self._read("SELECT i.number, p.prefix, i.title, i.updated_at "
+                                "FROM issues i JOIN projects p ON p.id=i.project_id "
                                 "WHERE i.merged_into=? ORDER BY i.number", (iid,))]
         if d.get("parent"):
-            parent = self._row_by_id(row["parent_id"])
+            parent = self._read("SELECT i.number, p.prefix, i.title, i.status FROM issues i "
+                                "JOIN projects p ON p.id=i.project_id WHERE i.id=?", (row["parent_id"],))[0]
             d["parent_info"] = {"id": self._key(parent), "title": parent["title"], "status": parent["status"]}
         d["commands"] = [self._command_dict(c) for c in self._read(
             "SELECT * FROM commands WHERE issue_id=? ORDER BY id DESC LIMIT 10", (iid,))]
+        self._command_cache_deadline(d["commands"])
         d["comment_count"] = len(d["comments"])
         d["attachment_count"] = len(atts)
         return d
@@ -1755,6 +2024,7 @@ class Store:
             "section_order": list(HANDOFF_SECTIONS),
         }
 
+    @cached_read
     def get_handoff(self, slug: str, version: Any = None) -> dict:
         """The project's handoff: the latest version, or `version`. Version 0 = none written yet."""
         project = self._project_row(slug)
@@ -1831,12 +2101,12 @@ class Store:
 
     def event_cursor(self) -> dict:
         """The newest comment and activity ids: a cursor that means 'seen everything so far'."""
-        with self._lock:
-            return feed_cursor(self.conn)
+        with self._reader() as conn:
+            return feed_cursor(conn)
 
     def change_feed(self, cursor: dict, limit: int = 500) -> dict:
-        with self._lock:
-            return read_changes(self.conn, cursor, limit)
+        with self._reader() as conn:
+            return read_changes(conn, cursor, limit)
 
     def owner_events(self, slug: str, cursor: dict | None, limit: int = 50,
                      kinds: Iterable[str] | None = None) -> dict:
@@ -1904,7 +2174,7 @@ class Store:
 
     def add_comment(self, key: str, author: str | None, text: str | None, verdict: str | None = None,
                     attachments: list | None = None, attachment_paths: list | None = None,
-                    path_base: Iterable[str | Path] | None = None) -> dict:
+                    path_base: Iterable[str | Path] | None = None, *, full: bool = True) -> dict:
         row = self._issue_row(key, follow=True)
         key = self._key(row)
         author = _text(author or "owner", "author", 80, required=True).strip()
@@ -1933,8 +2203,27 @@ class Store:
             if verdict and current["status"] != verdict:
                 diff["status"] = verdict
             self._apply_changes(c, row["id"], current, diff, author, now, reason="verdict" if diff else None)
-        issue = self.get_issue(key)
-        comment = next(cm for cm in issue["comments"] if cm["id"] == comment_id)
+        if full:
+            issue = self.get_issue(key)
+            comment = next(cm for cm in issue["comments"] if cm["id"] == comment_id)
+        else:
+            # MCP only returns a compact issue and the new comment. Do not load/parse the
+            # entire historical timeline just to throw it away on every agent progress call.
+            with self._snapshot():
+                issue = self.get_issue(key, full=False)
+                counts = self._read("SELECT (SELECT COUNT(*) FROM comments WHERE issue_id=i.id) comments,"
+                                    " (SELECT COUNT(*) FROM attachments WHERE issue_id=i.id) attachments"
+                                    " FROM issues i WHERE project_id=? AND number=?",
+                                    (row["project_id"], issue["number"]))[0]
+                issue.update(comment_count=counts["comments"], attachment_count=counts["attachments"])
+                origin = "(SELECT x.number FROM issues x WHERE x.id=t.merged_from) merged_number"
+                def merged_from(r):
+                    return f"{row['prefix']}-{r['merged_number']}" if r["merged_number"] is not None else None
+                atts = [{**self._attachment_dict(a), "merged_from": merged_from(a)} for a in self._read(
+                    f"SELECT t.*, {origin} FROM attachments t WHERE comment_id=? ORDER BY id", (comment_id,))] if decoded else []
+                cm = self._read(f"SELECT t.*, {origin} FROM comments t WHERE id=?", (comment_id,))[0]
+                comment = {k: cm[k] for k in ("id", "author", "text", "verdict", "created_at")}
+                comment.update(attachments=atts, merged_from=merged_from(cm))
         return {"comment": comment, "issue": issue}
 
     # -- attachments ------------------------------------------------------------------------

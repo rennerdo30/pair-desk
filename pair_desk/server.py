@@ -10,12 +10,14 @@ server served, which carries its per-server token, from this machine.
 from __future__ import annotations
 
 import hmac
+import hashlib
 import ipaddress
 import json
 import mimetypes
 import queue
 import re
 import secrets
+import shutil
 import sqlite3
 import sys
 import threading
@@ -159,6 +161,8 @@ def route(method: str, pattern: str):
 class DeskServer(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = False
+    # The stdlib default backlog of five makes simultaneous clients wait for TCP retries.
+    request_queue_size = 128
 
     def __init__(self, addr, store: Store, lan: bool = False, verbose: bool = False):
         self.store = store
@@ -179,6 +183,7 @@ class Handler(BaseHTTPRequestHandler):
     server: DeskServer
     protocol_version = "HTTP/1.1"
     server_version = f"PairDesk/{VERSION}"
+    disable_nagle_algorithm = True
 
     # -- plumbing ---------------------------------------------------------------------------
 
@@ -250,6 +255,7 @@ class Handler(BaseHTTPRequestHandler):
         return {**build, "local": info}
 
     def _cors(self):
+        self.send_header("Vary", "Origin")
         origin = self.headers.get("Origin")
         if origin is not None and self._origin_allowed(origin):
             self.send_header("Access-Control-Allow-Origin", origin)
@@ -258,7 +264,8 @@ class Handler(BaseHTTPRequestHandler):
     def _send(self, status: int, body: bytes, ctype: str, extra: dict | None = None):
         self.send_response(status)
         self.send_header("Content-Type", ctype)
-        self.send_header("Content-Length", str(len(body)))
+        if status != 304:
+            self.send_header("Content-Length", str(len(body)))
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "no-referrer")
         self._cors()
@@ -269,8 +276,27 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(body)
 
     def _json(self, data, status: int = 200):
-        body = json.dumps(data, ensure_ascii=False).encode("utf-8")
-        self._send(status, body, "application/json; charset=utf-8", {"Cache-Control": "no-store"})
+        body = json.dumps(data, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        self._representation(status, body, "application/json; charset=utf-8")
+
+    def _representation(self, status: int, body: bytes, ctype: str, extra: dict | None = None):
+        headers = {"Cache-Control": "no-store", **(extra or {})}
+        if status == 200 and self.command in ("GET", "HEAD"):
+            etag = '"' + hashlib.sha256(body).hexdigest() + '"'
+            headers.update({"ETag": etag, "Cache-Control": "private, no-cache"})
+            tags = [tag.strip().removeprefix("W/") for tag in self.headers.get("If-None-Match", "").split(",")]
+            if etag in tags or "*" in tags:
+                return self._send(304, b"", ctype, headers)
+        self._send(status, body, ctype, headers)
+
+    def _cached_json(self, key: tuple, load):
+        def snapshot():
+            # Nested store reads bypass their object cache while inside this snapshot.
+            # Cold responses are serialized once, not cached/decoded/re-encoded twice.
+            with self.store._snapshot():
+                return load()
+        body = self.store.cached_json(("http", *key), snapshot)
+        self._representation(200, body, "application/json; charset=utf-8")
 
     def _no_content(self):
         self.send_response(204)
@@ -379,7 +405,7 @@ class Handler(BaseHTTPRequestHandler):
         body = target.read_bytes()
         if rel == "index.html":
             body = body.replace(TOKEN_META.encode(), TOKEN_META.replace('content=""', f'content="{self.server.token}"').encode())
-        self._send(200, body, ctype, {
+        self._representation(200, body, ctype, {
             "Cache-Control": "no-cache",
             "Content-Security-Policy": STATIC_CSP,
         })
@@ -392,7 +418,7 @@ class Handler(BaseHTTPRequestHandler):
 
     @route("GET", r"/api/projects")
     def api_projects(self):
-        self._json({"projects": self.store.list_projects()})
+        self._cached_json(("projects",), lambda: {"projects": self.store.list_projects()})
 
     @route("POST", r"/api/projects")
     def api_project_create(self):
@@ -478,7 +504,8 @@ class Handler(BaseHTTPRequestHandler):
 
     @route("GET", r"/api/projects/([^/]+)/handoff")
     def api_handoff(self, slug):
-        self._json(self.store.get_handoff(slug, self.query.get("version")))
+        self._cached_json(("handoff", slug, self.query.get("version")),
+                          lambda: self.store.get_handoff(slug, self.query.get("version")))
 
     @route("POST", r"/api/projects/([^/]+)/handoff")
     def api_handoff_save(self, slug):
@@ -498,7 +525,8 @@ class Handler(BaseHTTPRequestHandler):
 
     @route("GET", r"/api/projects/([^/]+)/issues")
     def api_issues(self, slug):
-        self._json(self.store.list_issues(slug, self.query))
+        self._cached_json(("issues", slug, json.dumps(self.query, sort_keys=True)),
+                          lambda: self.store.list_issues(slug, self.query))
 
     @route("POST", r"/api/projects/([^/]+)/issues")
     def api_issue_create(self, slug):
@@ -527,8 +555,15 @@ class Handler(BaseHTTPRequestHandler):
 
     @route("GET", r"/api/issues/([^/]+)")
     def api_issue(self, key):
-        issue = self.store.get_issue(key)
-        self._json({**issue, "build": self._local(issue["build"])})
+        # Cache the serialized timeline too. The small base issue supplies the build path;
+        # its current filesystem capabilities are part of the key, so deleting/moving a
+        # build without a DB write still updates the owner's Open/Run controls immediately.
+        base = self.store.get_issue(key, full=False)
+        local = self._local(base["build"])
+        def load():
+            issue = self.store.get_issue(key)
+            return {**issue, "build": self._local(issue["build"])}
+        self._cached_json(("issue", key, json.dumps(local, sort_keys=True)), load)
 
     @route("PATCH", r"/api/issues/([^/]+)")
     def api_issue_update(self, key):
@@ -610,16 +645,32 @@ class Handler(BaseHTTPRequestHandler):
     def api_attachment(self, att_id):
         meta, path = self.store.get_attachment(att_id)
         try:
-            data = path.read_bytes()
+            f = path.open("rb")
         except OSError:
             raise NotFound("attachment file is missing from the data folder") from None
         inline = bool(INLINE_TYPES.match(meta["mime"]))
         safe_name = re.sub(r"[^A-Za-z0-9._ -]", "_", meta["filename"])
-        self._send(200, data, meta["mime"] if inline else "application/octet-stream", {
-            "Content-Disposition": f'{"inline" if inline else "attachment"}; filename="{safe_name}"',
-            "Content-Security-Policy": "sandbox; default-src 'none'; img-src 'self'; media-src 'self'",
-            "Cache-Control": "private, max-age=31536000, immutable",
-        })
+        # Keep memory bounded for large files and concurrent image galleries. HEAD sends
+        # metadata without reading any bytes; opening before headers preserves missing-file errors.
+        with f:
+            import os
+            self.send_response(200)
+            self.send_header("Content-Type", meta["mime"] if inline else "application/octet-stream")
+            self.send_header("Content-Length", str(os.fstat(f.fileno()).st_size))
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Referrer-Policy", "no-referrer")
+            self.send_header("Content-Disposition", f'{"inline" if inline else "attachment"}; filename="{safe_name}"')
+            self.send_header("Content-Security-Policy", "sandbox; default-src 'none'; img-src 'self'; media-src 'self'")
+            self.send_header("Cache-Control", "private, max-age=31536000, immutable")
+            self._cors()
+            self.end_headers()
+            if self.command != "HEAD":
+                try:
+                    shutil.copyfileobj(f, self.wfile, length=256 * 1024)
+                except OSError:
+                    # Headers are already sent; end this connection rather than append a
+                    # second JSON response to a partially transferred file.
+                    self.close_connection = True
 
     @route("DELETE", r"/api/attachments/(\d+)")
     def api_attachment_delete(self, att_id):

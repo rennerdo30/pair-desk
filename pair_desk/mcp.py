@@ -395,6 +395,8 @@ class McpServer:
         if args.get("merged"):
             filters["merged"] = "1"
         filters["limit"] = args.get("limit") or 50
+        if not args.get("full"):
+            filters["summary"] = "1"
         res = self.store.list_issues(self._project(args), filters)
         full = bool(args.get("full"))
         return {"project": res["project"], "total": res["total"], "status_counts": res["counts"]["status"],
@@ -431,7 +433,7 @@ class McpServer:
         if verdict == "passed":
             raise Invalid(AGENT_FORBIDDEN)
         res = self.store.add_comment(args["id"], self._author(args), args.get("text"), verdict,
-                                     attachment_paths=args.get("attachment_paths"), path_base=self._path_base())
+                                     attachment_paths=args.get("attachment_paths"), path_base=self._path_base(), full=False)
         return {"comment": res["comment"], "issue": _compact(res["issue"], False)}
 
     def t_set_location(self, args):
@@ -600,12 +602,23 @@ class McpServer:
         if not isinstance(args, dict):
             return {"content": [{"type": "text", "text": "arguments must be an object"}], "isError": True}
         try:
-            data = handler(args)
+            if name in ("list_issues", "get_issue"):
+                # Reuse the JSON text, not a deserialize/compact/serialize round trip for
+                # every agent read. Resolve links before caching: repo links can change
+                # without a database commit. Writes and errors are never cached.
+                project = self._project(args) if name == "list_issues" else None
+                key = ("mcp", name, project, json.dumps(args, sort_keys=True, ensure_ascii=False))
+                def load():
+                    with self.store._snapshot():
+                        return handler(args)
+                text = self.store.cached_json(key, load).decode("utf-8")
+            else:
+                data = handler(args)
+                text = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
         except KeyError as e:
             return {"content": [{"type": "text", "text": f"missing argument {e}"}], "isError": True}
         except DeskError as e:
             return {"content": [{"type": "text", "text": str(e)}], "isError": True}
-        text = json.dumps(data, ensure_ascii=False, indent=1)
         return {"content": [{"type": "text", "text": text}]}
 
     # -- output and the channel --------------------------------------------------------------
