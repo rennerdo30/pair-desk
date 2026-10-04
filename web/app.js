@@ -94,9 +94,10 @@ const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
 /** The server's per-run token, written into index.html as it is served: it lets this page (and no other)
  *  open a build's folder or run it. */
 const DESK_TOKEN = document.querySelector('meta[name="pair-desk-token"]')?.content || "";
+const RESPONSE_ETAG = Symbol("response-etag");
 
-async function api(method, path, body, headers = {}) {
-  const opts = { method, headers: { ...headers } };
+async function api(method, path, body, headers = {}, signal) {
+  const opts = { method, headers: { ...headers }, signal };
   if (body !== undefined) {
     opts.headers["Content-Type"] = "application/json";
     opts.body = JSON.stringify(body);
@@ -105,11 +106,13 @@ async function api(method, path, body, headers = {}) {
   try {
     res = await fetch(path, opts);
   } catch (e) {
+    if (e.name === "AbortError") throw e;
     throw new Error("The desk server is not reachable. Is `python desk.py serve` still running?");
   }
   if (res.status === 204) return null;
-  const data = await res.json().catch(() => ({}));
+  const data = await res.json().catch((e) => { if (e.name === "AbortError") throw e; return {}; });
   if (!res.ok) throw new Error(data.error || `${res.status} ${res.statusText}`);
+  if (data && typeof data === "object") data[RESPONSE_ETAG] = res.headers.get("ETag");
   return data;
 }
 
@@ -517,17 +520,27 @@ function listQuery() {
   if (f.q) p.set("q", f.q);
   p.set("sort", backlog ? "backlog" : f.sort);
   p.set("limit", String(backlog ? 5000 : S.limit));
+  // Rows need metadata and plan progress; descriptions and full plans load on opening detail.
+  p.set("summary", "1");
   return p.toString();
 }
 
+let listRequest = null;
 async function loadList() {
   if (!S.slug) return;
   const seq = ++S.listSeq;
+  listRequest?.abort();
+  const request = listRequest = new AbortController();
+  const readKey = `/api/projects/${encodeURIComponent(S.slug)}/issues?${listQuery()}`;
+  const presentationKey = `${S.view}:${readKey}`;
   let res;
   try {
-    res = await api("GET", `/api/projects/${encodeURIComponent(S.slug)}/issues?${listQuery()}`);
-  } catch (e) { fail(e); return; }
+    res = await api("GET", readKey, undefined, {}, request.signal);
+  } catch (e) { if (e.name !== "AbortError") fail(e); return; }
+  finally { if (listRequest === request) listRequest = null; }
   if (seq !== S.listSeq) return; // a newer request superseded this one
+  if (presentationKey === S.listReadKey && res[RESPONSE_ETAG] && res[RESPONSE_ETAG] === S.list[RESPONSE_ETAG]) return;
+  S.listReadKey = presentationKey;
   // Rows whose updated_at moved since the last list just changed: highlight them once.
   const fresh = new Set();
   if (S.rowStamp.size) {
@@ -1148,13 +1161,15 @@ function addPending(files) {
 
 async function refreshIssue() {
   if (!S.openId) return;
+  const id = S.openId, slug = S.slug;
   try {
-    const issue = await api("GET", `/api/issues/${encodeURIComponent(S.openId)}`);
+    const issue = await api("GET", `/api/issues/${encodeURIComponent(id)}`);
+    if (S.openId !== id || S.slug !== slug) return;
     if (issue.id !== S.openId) { go(S.slug, issue.id); return; }
     S.issue = issue;
     renderDetail(false);
     S.seen = timelineKeys(issue);
-  } catch (e) { fail(e); }
+  } catch (e) { if (S.openId === id && S.slug === slug) fail(e); }
 }
 
 async function refreshAll() {
@@ -1445,17 +1460,25 @@ function selectRange(toIdx) {
 let liveTimer = null;
 const liveQueue = { issues: new Set(), handoff: false, all: false };
 
+function showLiveState(ok) {
+  S.liveOk = ok;
+  document.body.dataset.live = ok ? "sse" : "poll";
+  const el = $(".live-state");
+  if (el) {
+    el.textContent = ok ? "● live" : "○ polling";
+    el.title = ok ? "Live: changes appear as they happen" : "Checking for changes every few seconds";
+  }
+}
+
 function connectLive(slug) {
   if (S.live) { S.live.close(); S.live = null; }
-  S.liveOk = false;
-  document.body.dataset.live = "poll";
+  showLiveState(false);
   if (typeof EventSource === "undefined") return;
   const es = new EventSource(`/api/projects/${encodeURIComponent(slug)}/events`);
   S.live = es;
   es.addEventListener("hello", () => {
     const wasDown = !S.liveOk;
-    S.liveOk = true;
-    document.body.dataset.live = "sse";
+    showLiveState(true);
     if (wasDown) scheduleLive({ all: true }); // catch up on anything missed while disconnected
   });
   es.addEventListener("change", (ev) => {
@@ -1467,8 +1490,7 @@ function connectLive(slug) {
   });
   es.addEventListener("refresh", () => scheduleLive({ all: true }));
   es.onerror = () => {
-    S.liveOk = false;
-    document.body.dataset.live = "poll";
+    showLiveState(false);
   };
 }
 

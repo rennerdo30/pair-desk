@@ -327,7 +327,7 @@ browser `Origin` other than `http://127.0.0.1[:port]`, `http://localhost[:port]`
 | `DELETE /api/projects/{slug}/build` | no current build (`?off=1`: stop using builds) → `{project, build, builds_enabled}` |
 | `POST /api/projects/{slug}/build/open`, `.../build/run` | reveal the current build in the file manager, or start it (detached, in its own folder, no shell, no arguments) → `{ok, action, path, folder \| started}`. Acts only on the stored path (the body is ignored); 409 when the path is not on this machine, or for `run` a folder or not an executable. Needs the page's `X-Pair-Desk-Token`, a loopback client and a same-origin request, else 403. The build in `GET /api/projects/{slug}` and `GET /api/issues/{id}` carries `local: {exists, kind, open, run}`. |
 | `POST /api/issues/{id}/build/open`, `.../build/run` | the same for the build stamped on the issue |
-| `GET /api/projects/{slug}/issues` | filters: `status`, `kind`, `priority`, `area`, `source`, `milestone`, `size` (`S`, `M`, `L`, `none`) (each comma separated for several), `tag`, `q`, `since` (updated at or after, ISO), `external_ref`, `seed` (location world seed), `merged` (`1`: only issues merged into another), `sort` (`triage` default, `updated`, `created`, `oldest`, `priority`, `number`, `backlog`: priority, size, area), `limit` (default 500, max 5000), `offset`. Returns `{project, total, limit, offset, issues, counts: {status, kind, priority, area, seed, size, milestone}}`; each count ignores its own filter so chips show what selecting them would give. |
+| `GET /api/projects/{slug}/issues` | filters: `status`, `kind`, `priority`, `area`, `source`, `milestone`, `size` (`S`, `M`, `L`, `none`) (each comma separated for several), `tag`, `q`, `since` (updated at or after, ISO), `external_ref`, `seed` (location world seed), `merged` (`1`: only issues merged into another), `sort` (`triage` default, `updated`, `created`, `oldest`, `priority`, `number`, `backlog`: priority, size, area), `limit` (default 500, max 5000), `offset`. Returns `{project, total, limit, offset, issues, counts: {status, kind, priority, area, seed, size, milestone}}`; each count ignores its own filter so chips show what selecting them would give. Optional `summary=1` omits issue `body` and full `plan`, keeping `plan_progress` and all other metadata; the default response is unchanged. |
 | `POST /api/projects/{slug}/issues` | issue fields (`commands` is shorthand for `location.commands`, `command` for its first entry), plus `author` and `attachments: [{filename, mime, data_base64}]` → the full issue (201) |
 | `GET /api/issues/{id}` | issue plus `comments` (with their attachments), `attachments`, `activity`, `commands` (last 10 sent for it) |
 | `PATCH /api/issues/{id}` | any issue fields, plus `actor` for the activity entry. `commands` replaces the location's command list; `command` replaces its first entry (empty text removes it). |
@@ -351,6 +351,12 @@ browser `Origin` other than `http://127.0.0.1[:port]`, `http://localhost[:port]`
 | `GET /api/projects/{slug}/handoff/history` | `{versions: [{version, author, note, created_at, size}]}` |
 | `GET /api/projects/{slug}/handoff/diff` | `?from=N&to=M` (to defaults to the latest) → `{diff}` (unified) |
 | `GET /api/commands/{id}` | `{id, command, issue, created_at, expires_at, delivered_at, client, state}`; `state` is `pending`, `delivered` or `expired` |
+
+Successful GET/HEAD responses for JSON reads and the web assets include an `ETag` and require
+revalidation (`Cache-Control: private, no-cache`). Send `If-None-Match` to receive `304` when
+unchanged. Writes and errors are not cached. Read caches detect committed writes from other
+CLI/MCP processes, including writes with unchanged timestamps. Build controls also check the
+current filesystem state. Attachment bytes stream in bounded chunks; HEAD returns metadata only.
 
 Example: the game files a report with a screenshot in one call.
 
@@ -559,7 +565,13 @@ python scripts/smoke.py                   # real server process on a free port, 
 python scripts/ui-smoke.py                # optional: browser checks with temporary data and a free port
 python scripts/demo-desk.py --data <empty dir>                           # a throwaway desk with sample data
 node scripts/ui-check.mjs http://127.0.0.1:8799 [shots-dir] [mygame]    # optional: drives Edge/Chrome headless against a throwaway desk
+node scripts/test-timeline.mjs             # timeline renderer regression checks
+node scripts/test-ui-refresh.mjs           # refresh cancellation and view/navigation behavior
 ```
+
+For isolated large-desk HTTP/MCP/browser benchmarks, read
+[the performance report and reproduction steps](docs/performance.md). The benchmark
+driver uses a copied database and owns its test processes; it never restarts a live desk.
 
 CI runs the tests and the smoke test on Linux, macOS and Windows with Python 3.11 to 3.13; the
 browser check is a separate, manually started workflow. See [CONTRIBUTING.md](CONTRIBUTING.md).
