@@ -73,6 +73,20 @@ class QueryTests(StoreCase):
         self.assertEqual(res["counts"]["area"], {"water": 1})
         self.assertEqual(s.list_issues("mygame", {"q": "mg-1"})["total"], 1)
 
+    def test_search_matches_more_than_the_older_sqlite_parameter_limit(self):
+        s = self.store
+        s.create_issue("mygame", {"title": "needle", "status": "open"})
+        with s._tx() as c:
+            c.executemany("INSERT INTO issues(project_id,number,title,kind,status,priority,source,created_at,updated_at) "
+                          "VALUES (1,?,'needle','task','open','p1','agent',?,?)",
+                          [(n, s.now(), s.now()) for n in range(2, 1102)])
+        for conn in s._readers:
+            conn.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 999)
+        result = s.list_issues("mygame", {"q": "needle", "limit": 2, "offset": 1000, "sort": "number"})
+        self.assertEqual(result["total"], 1101)
+        self.assertEqual([r["number"] for r in result["issues"]], [101, 100])
+        self.assertEqual(result["counts"]["status"], {"open": 1101})
+
     def test_page_metadata_and_merges_preserve_counts(self):
         s = self.store
         for title in ("target", "source", "child", "other"):
@@ -313,6 +327,36 @@ class CacheTests(StoreCase):
             full = s.get_issue("MG-1")
             self.assertEqual(got["comment"], full["comments"][-1])
             self.assertEqual(got["issue"], _compact(full, False))
+        finally:
+            mcp.store.close()
+
+    def test_progress_and_step_updates_do_not_read_historical_timeline(self):
+        s = self.store
+        s.create_issue("mygame", {"title": "one"})
+        s.set_plan("MG-1", ["implement", "verify"], "check")
+        # A long thread must not change the work needed for a one-line acknowledgement.
+        with s._tx() as c:
+            c.executemany("INSERT INTO comments(issue_id,author,text,created_at) VALUES (1,'agent',?,?)",
+                          [("historical " + str(n), s.now()) for n in range(300)])
+        mcp = McpServer(self.tmp)
+        try:
+            original = mcp.store.get_issue
+            def compact_only(*args, **kwargs):
+                self.assertIs(kwargs.get("full"), False, "progress loaded the complete timeline")
+                return original(*args, **kwargs)
+            with patch.object(mcp.store, "get_issue", side_effect=compact_only):
+                result = mcp.t_progress({"id": "MG-1", "step": 1, "state": "doing", "text": "working"})
+                self.assertEqual(result, {"ok": "MG-1 updated (in_progress, plan 0/2)"})
+                result = mcp.t_update_step({"id": "MG-1", "index": 1, "state": "done", "commit": "abc123"})
+                self.assertEqual(result["progress"], "1/2")
+                # No-op updates must also retain the compact path.
+                mcp.t_progress({"id": "MG-1", "step": 1, "state": "done"})
+            full = s.get_issue("MG-1")
+            self.assertEqual(full["comment_count"], 301)
+            self.assertEqual(full["comments"][-1]["text"], "working")
+            self.assertEqual(full["plan"]["steps"][0]["commit"], "abc123")
+            # Store/HTTP/CLI callers still get the legacy full response by default.
+            self.assertEqual(len(s.update_step("MG-1", 2, state="done")["comments"]), 301)
         finally:
             mcp.store.close()
 

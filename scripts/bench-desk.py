@@ -4,7 +4,7 @@ First: --snapshot-live <data-folder> --snapshot .cache/perf-snapshot
 Then: --snapshot .cache/perf-snapshot --data .cache/perf-data --out .cache/before.json
 Repeat with the same snapshot after editing. Only the restored copy is writable.
 Pass --project <slug>. --mixed-only --rounds 30 measures 20 MCP readers/writers alongside
-owner HTTP reads, using rich copied histories. The HTTP server and 20 stdio MCP processes
+owner HTTP reads and CLI list/show calls, using rich copied histories. The HTTP server and 20 stdio MCP processes
 are owned and cleaned up by this script.
 """
 from __future__ import annotations
@@ -134,7 +134,7 @@ def run(args):
     code = args.code.resolve()
     # Never delete arbitrary directories: only overwrite known benchmark files under .cache.
     cache = (ROOT / ".cache").resolve()
-    if not data.is_relative_to(cache) or data == snap or data in snap.parents:
+    if not data.is_relative_to(cache) or data == cache or data == snap or data in snap.parents:
         raise ValueError("--data must be a separate child of this worktree's .cache")
     import socket
     # Refuse an occupied port before touching the benchmark copy.
@@ -231,11 +231,13 @@ def run(args):
             "mcp_list": ("list_issues", {"project": args.project, "sort": "backlog", "status": "open,in_progress", "limit": 50}),
             "mcp_get": ("get_issue", {"id": detail}),
             "mcp_comment": ("comment", {"text": "Isolated benchmark comment", "author": "bench"}),
+            "mcp_progress": ("progress", {"text": "Isolated benchmark progress", "author": "bench"}),
+            "mcp_handoff": ("get_handoff", {"project": args.project}),
         }
         hot_tools = {} if args.mixed_only else tools
         for label, (name, params) in hot_tools.items():
             def tool_args(i):
-                return {**params, "id": keys[i]} if name == "comment" else params
+                return {**params, "id": keys[i]} if name in ("comment", "progress") else params
             for _ in range(3):
                 clients[0].tool(name, tool_args(0))
             results["serial"][label] = stats([timed(lambda: clients[0].tool(name, tool_args(0))) for _ in range(args.samples)])
@@ -249,9 +251,10 @@ def run(args):
             print(label, results["serial"][label], results["concurrent_20"][label], flush=True)
             args.out.write_text(json.dumps(results, indent=2) + "\n", encoding="utf-8")
         if args.mixed_only:
-            barrier = threading.Barrier(21)
+            barrier = threading.Barrier(22)
             owner_done = threading.Event()
             mixed_start = time.perf_counter()
+            results["mixed_started_utc"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
             names = list(tools)
             def agent(i):
                 barrier.wait()
@@ -264,16 +267,16 @@ def run(args):
                     if args.pace_ms:
                         target = start + args.pace_ms / 1000 * (turn + i / 20)
                         time.sleep(max(0, target - time.perf_counter()))
-                    for j in range(3):
-                        label = names[(i + j) % 3]
+                    for j in range(len(names)):
+                        label = names[(i + j) % len(names)]
                         name, params = tools[label]
-                        params = {**params, "id": keys[i % len(keys)]} if name == "comment" else params
+                        params = {**params, "id": keys[i % len(keys)]} if name in ("comment", "progress") else params
                         values[label].append(timed(lambda: clients[i].tool(name, params)))
                     turn += 1
                 return values
             def owner():
                 barrier.wait()
-                values = {name: [] for name in ("health", "triage_200", "backlog", "ui_triage", "ui_backlog", "search", "detail", "project")}
+                values = {name: [] for name in ("health", "triage_200", "backlog", "ui_triage", "ui_backlog", "search", "detail", "project", "handoff")}
                 conn = HTTPConnection("127.0.0.1", args.port, timeout=60)
                 try:
                     for _ in range(args.rounds):
@@ -283,15 +286,36 @@ def run(args):
                     conn.close()
                     owner_done.set()
                 return values
-            with concurrent.futures.ThreadPoolExecutor(max_workers=21) as pool:
+            def cli():
+                barrier.wait()
+                values = {"cli_list": [], "cli_show": []}
+                for _ in range(args.rounds):
+                    for label, command in (("cli_list", ["list", "--project", args.project, "--status", "open,in_progress", "--limit", "50", "--json"]),
+                                           ("cli_show", ["show", detail, "--json"])):
+                        def call():
+                            subprocess.run([sys.executable, str(code / "desk.py"), "--data", str(data), *command],
+                                           check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=60)
+                        values[label].append(timed(call))
+                return values
+            with concurrent.futures.ThreadPoolExecutor(max_workers=22) as pool:
                 workers = [pool.submit(agent, i) for i in range(20)]
                 owner_future = pool.submit(owner)
+                cli_future = pool.submit(cli)
                 agents = [f.result() for f in workers]
                 results["http_during_20_mcp"] = {k: stats(v) for k, v in owner_future.result().items()}
+                results["cli_during_20_mcp"] = {k: stats(v) for k, v in cli_future.result().items()}
             results["mixed_20_mcp"] = {k: stats([v for a in agents for v in a[k]]) for k in names}
             results["mixed_elapsed_s"] = round(time.perf_counter() - mixed_start, 3)
+            results["mixed_clients"] = {"mcp": 20, "http": 1, "cli": 1}
+            groups = ("mixed_20_mcp", "http_during_20_mcp", "cli_during_20_mcp")
+            results["requests_per_second"] = round(sum(v["n"] for g in groups for v in results[g].values()) / results["mixed_elapsed_s"], 3)
+            for group in groups:
+                for value in results[group].values():
+                    value["requests_per_second"] = round(value["n"] / results["mixed_elapsed_s"], 3)
             print("http_during_20_mcp", results["http_during_20_mcp"], flush=True)
             print("mixed_20_mcp", results["mixed_20_mcp"], flush=True)
+            print("cli_during_20_mcp", results["cli_during_20_mcp"], flush=True)
+            print("requests_per_second", results["requests_per_second"], flush=True)
         if args.browser:
             browser_out = args.out.with_suffix(".browser.json")
             subprocess.run(["node", str(ROOT / "scripts/bench-ui.mjs"), f"http://127.0.0.1:{args.port}",

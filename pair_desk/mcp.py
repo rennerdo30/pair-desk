@@ -476,7 +476,7 @@ class McpServer:
 
     def t_update_step(self, args):
         issue = self.store.update_step(args["id"], args.get("index"), args.get("state"), args.get("commit"),
-                                       args.get("note"), args.get("text"), self._author(args))
+                                       args.get("note"), args.get("text"), self._author(args), full=False)
         return self._plan_result(issue)
 
     def t_progress(self, args):
@@ -487,9 +487,9 @@ class McpServer:
         issue = None
         if args.get("step") is not None:
             issue = self.store.update_step(args["id"], args["step"], args.get("state"), args.get("commit"),
-                                           actor=author)
+                                           actor=author, full=False)
         if str(args.get("text") or "").strip():
-            issue = self.store.add_comment(args["id"], author, args["text"])["issue"]
+            issue = self.store.add_comment(args["id"], author, args["text"], full=False)["issue"]
         prog = issue["plan_progress"]
         plan = f", plan {prog['done']}/{prog['total']}" if prog["total"] else ""
         return {"ok": f"{issue['id']} updated ({issue['status']}{plan})"}
