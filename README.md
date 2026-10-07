@@ -181,8 +181,13 @@ python desk.py serve --lan           # all interfaces, no authentication: truste
 - **Select and merge:** tick the row checkboxes, or shift-click rows for a range, or `x` on the
   cursor row. The selection bar offers *Merge into…* (`m`) and *Group under…*; the dialog picks the
   target (the oldest by default).
-- **Live updates:** the page listens to the desk's event stream. A comment, status change, plan
-  tick, merge, game report or handoff save from anywhere appears within a second, and rows and
+- **Large lists:** triage, backlog and board render the visible rows with a small scroll buffer.
+  Keyboard movement and selection include loaded issues outside that window; live edits keep
+  unchanged rows in place. *Show more* still loads another page of issues.
+- **Live updates:** tabs share one event stream across projects through a browser shared worker
+  (short polling when unavailable), and release their subscriptions when navigating away.
+  A comment, status change, plan tick, merge, game report or handoff save from anywhere appears
+  within a second, and rows and
   timeline entries that just changed are highlighted. The footer says `● live`; if the stream
   drops, the page polls every few seconds until it is back.
 - **Splitter** between the list and the detail: drag it, or focus it and use Left/Right
@@ -340,6 +345,7 @@ browser `Origin` other than `http://127.0.0.1[:port]`, `http://localhost[:port]`
 | `GET /api/projects/{slug}/commands/next?client=<name>` | oldest undelivered, unexpired command, marked delivered to `client`; **204** when there is none |
 | `GET /api/projects/{slug}/commands?limit=` | recent commands with `state` |
 | `GET /api/projects/{slug}/events` | Server-Sent Events: `hello` on connect, then `change` (`{changes: [{issue, type: comment\|activity\|handoff, action, actor, id}]}`) for every write to this project from any process (web, game, CLI, MCP), and `refresh` for writes without a feed row (a deletion, a setting). Keep-alive comment every 15 s. |
+| `GET /api/events` | The same event protocol across all projects, for the browser's shared live connection. Each change names its `project`; `hello.project` is null. |
 | `POST /api/issues/{id}/plan` | `{steps, verification?, actor?}` → the issue. Steps are text or `{text, state, commit, note}`; steps whose text matches keep their state. |
 | `PATCH /api/issues/{id}/plan/steps/{n}` | `{state?, commit?, note?, text?, actor?}` (n = 1 for the first step; `""` clears commit or note) → the issue |
 | `POST /api/issues/{id}/parent` | `{parent: "MG-4" \| null, actor?}` → the issue (no loops, same project) |

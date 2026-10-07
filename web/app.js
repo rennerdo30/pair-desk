@@ -1,5 +1,6 @@
 // Pair Desk web UI. Plain ES modules, no build step, no network access beyond this desk.
 import { esc, renderMarkdown } from "./md.js";
+import { ListWindow, ROW_HEIGHT, BOARD_ROW_HEIGHT, GROUP_HEIGHT } from "./list-window.js";
 
 // ------------------------------------------------------------------------------ constants
 const STATUSES = ["to_check", "auto_check", "reported", "failed", "open", "in_progress", "parked", "passed", "closed"];
@@ -338,7 +339,9 @@ function go(slug, id) {
   else route();
 }
 
+let routeSeq = 0;
 async function route() {
+  const seq = ++routeSeq;
   const { slug, id } = parseHash();
   if (!slug) {
     const last = store("project");
@@ -347,8 +350,8 @@ async function route() {
     renderWelcome();
     return;
   }
-  if (slug !== S.slug) await loadProject(slug);
-  if (!S.project) return;
+  if (slug !== S.slug) await loadProject(slug, seq);
+  if (seq !== routeSeq || !S.project) return;
   if (id === HANDOFF) await openHandoff();
   else if (id) await openIssue(id);
   else closeDetail(false);
@@ -361,16 +364,21 @@ async function loadProjects() {
   renderProjectMenu();
 }
 
-async function loadProject(slug) {
+async function loadProject(slug, seq = routeSeq) {
+  let project;
   try {
-    S.project = await api("GET", `/api/projects/${encodeURIComponent(slug)}`);
+    project = await api("GET", `/api/projects/${encodeURIComponent(slug)}`);
   } catch (e) {
+    if (seq !== routeSeq) return;
     fail(e);
     S.project = null;
     if (S.projects.length) location.replace(`#/${S.projects[0].slug}`);
     else renderWelcome();
     return;
   }
+  if (seq !== routeSeq) return;
+  S.project = project;
+  S.lastChange = project.last_change;
   S.slug = slug;
   store("project", slug);
   S.filters = { ...DEFAULT_FILTERS(), ...(store(`filters.${slug}`) || {}), q: "" };
@@ -378,7 +386,7 @@ async function loadProject(slug) {
   S.collapsed = new Set(store(`collapsed.${slug}`) || []);
   S.selected.clear();
   S.rowStamp = new Map();
-  connectLive(slug);
+  S.listReadKey = null;
   $("#search").value = "";
   S.limit = PAGE;
   S.cursor = -1;
@@ -389,7 +397,10 @@ async function loadProject(slug) {
   $("#quick-add").hidden = false;
   renderProjectMenu();
   await loadList();
-  renderEmptyDetail();
+  if (seq === routeSeq) {
+    connectLive(slug);
+    if (!S.openId && !S.handoff) renderEmptyDetail();
+  }
 }
 
 function renderProjectMenu() {
@@ -549,7 +560,11 @@ async function loadList() {
   S.rowStamp = new Map(res.issues.map((i) => [i.id, i.updated_at]));
   const known = new Set(res.issues.map((i) => i.id));
   for (const id of [...S.selected]) if (!known.has(id)) S.selected.delete(id);
+  const cursorId = S.list.issues?.[S.cursor]?.id;
+  const anchorId = S.list.issues?.[S.anchor]?.id;
   S.list = res;
+  if (cursorId) S.cursor = res.issues.findIndex(i => i.id === cursorId);
+  if (anchorId) S.anchor = res.issues.findIndex(i => i.id === anchorId);
   renderFilters();
   renderList(fresh);
 }
@@ -563,6 +578,7 @@ function setFilter(mutator) {
   mutator(S.filters);
   S.limit = PAGE;
   S.cursor = -1;
+  $("#list").scrollTop = 0;
   saveFilters();
   loadList();
 }
@@ -632,7 +648,7 @@ function rowHtml(i, idx, fresh) {
   if (fresh?.has(i.id)) cls.push("fresh");
   const tags = (i.tags || []).slice(0, 3).map((t) => `<span class="tag">${esc(t)}</span>`).join("");
   const children = i.child_count ? { done: i.child_done, total: i.child_count } : null;
-  return `<div class="${cls.join(" ")}" data-id="${esc(i.id)}" data-idx="${idx}" role="option" aria-selected="${i.id === S.openId}">
+  return `<div id="issue-option-${esc(i.id)}" class="${cls.join(" ")}" data-id="${esc(i.id)}" data-idx="${idx}" role="option" aria-posinset="${idx + 1}" aria-setsize="${S.list.issues.length}" aria-selected="${i.id === S.openId}">
     <label class="row-check" title="Select (x), shift-click for a range"><input type="checkbox" data-select="${esc(i.id)}"${S.selected.has(i.id) ? " checked" : ""} aria-label="Select ${esc(i.id)}"></label>
     <span class="pill s-${i.status}">${STATUS_LABEL[i.status]}</span>
     <span class="row-title" title="${esc(i.title)}">${esc(i.title)}</span>
@@ -655,7 +671,7 @@ function rowHtml(i, idx, fresh) {
   </div>`;
 }
 
-function backlogHtml(issues, fresh) {
+function backlogItems(issues, fresh) {
   const groups = new Map();
   issues.forEach((i, idx) => {
     const area = i.area || "";
@@ -663,19 +679,88 @@ function backlogHtml(issues, fresh) {
     groups.get(area).push([i, idx]);
   });
   const order = [...groups.keys()].sort((a, b) => (a === "") - (b === "") || a.localeCompare(b));
-  return order.map((area) => {
+  return order.flatMap((area) => {
     const rows = groups.get(area);
     const folded = S.collapsed.has(area);
     const sizes = SIZES.map((sz) => [sz, rows.filter(([i]) => i.size === sz).length]).filter(([, n]) => n);
-    return `<div class="group${folded ? " folded" : ""}">
-      <button type="button" class="group-head" data-area="${esc(area)}" aria-expanded="${!folded}">
+    const html = `<button type="button" class="group-head${folded ? " folded" : ""}" data-area="${esc(area)}" aria-expanded="${!folded}">
         <span class="chev">${ICON.chev}</span><span class="group-name">${esc(area || "No area")}</span>
         <span class="count">${rows.length}</span>
         <span class="group-sizes">${sizes.map(([sz, n]) => `${n} ${sz}`).join(" · ")}</span>
-      </button>
-      ${folded ? "" : rows.map(([i, idx]) => rowHtml(i, idx, fresh)).join("")}
-    </div>`;
-  }).join("");
+      </button>`;
+    return [{ key: `group:${area}`, height: GROUP_HEIGHT, header: true, content: () => ({ html, stamp: html }) },
+      ...(folded ? [] : rows.map(([i, idx]) => windowRow(i, idx, fresh)))];
+  });
+}
+
+function windowRow(i, idx, fresh) {
+  return { key: i.id, height: S.view === "board" ? BOARD_ROW_HEIGHT : ROW_HEIGHT, content: () => ({
+    html: rowHtml(i, idx, fresh),
+    stamp: JSON.stringify([i, idx, S.list.issues.length, S.view, S.cursor === idx, S.openId === i.id, S.selected.has(i.id), !!fresh?.has(i.id)]),
+  }) };
+}
+
+let listWindows = [], windowKey = null, windowFrame = 0;
+function paintWindows() {
+  windowFrame = 0;
+  const list = $("#list"), top = list.scrollTop, height = list.clientHeight;
+  const left = list.scrollLeft, width = list.clientWidth;
+  listWindows.forEach((window, index) => {
+    const columnLeft = 12 + index * 312;
+    const visible = S.view !== "board" || (columnLeft + 300 > left && columnLeft < left + width);
+    window.render(top, visible ? height : 0);
+  });
+  const cursor = $(".issue-row.cursor", list);
+  if (cursor) list.setAttribute("aria-activedescendant", cursor.id);
+  else list.removeAttribute("aria-activedescendant");
+}
+function scheduleWindows() {
+  if (!windowFrame) windowFrame = requestAnimationFrame(paintWindows);
+}
+function revealRow(id) {
+  const list = $("#list"), top = list.scrollTop, height = list.clientHeight;
+  for (let index = 0; index < listWindows.length; index++) {
+    if (!listWindows[index].reveal(id, top, height)) continue;
+    if (S.view === "board") {
+      const left = 12 + index * 312;
+      if (left < list.scrollLeft) list.scrollLeft = left;
+      else if (left + 300 > list.scrollLeft + list.clientWidth) list.scrollLeft = left + 300 - list.clientWidth;
+    }
+    break;
+  }
+  paintWindows();
+}
+
+function renderWindows(issues, fresh) {
+  const list = $("#list");
+  const statuses = STATUSES.filter(s => !S.filters.status.length || S.filters.status.includes(s));
+  const key = `${S.slug}:${S.view}:${S.view === "board" ? statuses.join() : ""}`;
+  // Read the old anchor before any DOM writes. Keep the same issue in view when
+  // live triage sorting moves another row, without resetting a scrolled list.
+  const top = list.scrollTop;
+  const oldWindow = listWindows[0];
+  const anchor = top > 0 && oldWindow?.items[oldWindow.indexAt(top - oldWindow.offset)];
+  const delta = anchor ? top - anchor.top - oldWindow.offset : 0;
+  const sameWindow = key === windowKey;
+  if (!sameWindow) {
+    windowKey = key;
+    list.innerHTML = S.view === "board" ? `<div class="status-board">${statuses.map(s => `<section class="board-column list-window" data-status="${s}"></section>`).join("")}</div>` : '<div class="list-window"></div>';
+    listWindows = $$(".list-window", list).map(host => new ListWindow(host, list, S.view === "board" ? 12 : 0));
+    list.scrollTop = 0;
+  }
+  if (S.view === "board") {
+    for (const window of listWindows) {
+      const s = window.host.dataset.status;
+      const rows = issues.map((i, idx) => ({ i, idx })).filter(row => row.i.status === s);
+      const html = `<h3 class="pill s-${s}">${STATUS_LABEL[s]} (${rows.length})</h3>`;
+      window.setItems([{ key: `status:${s}`, height: 48, content: () => ({ html, stamp: html }) }, ...rows.map(({ i, idx }) => windowRow(i, idx, fresh))]);
+    }
+  } else listWindows[0].setItems(S.view === "backlog" ? backlogItems(issues, fresh) : issues.map((i, idx) => windowRow(i, idx, fresh)));
+  if (anchor && sameWindow && S.view !== "board") {
+    const moved = listWindows[0].positions.get(anchor.key);
+    if (moved) list.scrollTop = moved.top + delta;
+  }
+  paintWindows();
 }
 
 function renderSelectionBar() {
@@ -695,20 +780,12 @@ function renderList(fresh) {
   const issues = S.list.issues;
   renderSelectionBar();
   if (!issues.length) {
+    listWindows = []; windowKey = null;
     const filtered = S.filters.merged || S.filters.status.length || S.filters.kind.length || S.filters.priority.length || S.filters.area || S.filters.seed || S.filters.q;
     list.innerHTML = `<div class="list-empty"><strong>${filtered ? "Nothing matches these filters" : "No issues yet"}</strong>
       ${filtered ? 'Nothing waiting here. <button class="btn btn-sm" id="clear-filters">Show everything</button>' : "Add one with the bar above or press <kbd>n</kbd>."}</div>`;
     $("#clear-filters")?.addEventListener("click", () => setFilter((f) => { Object.assign(f, DEFAULT_FILTERS(), { status: [], sort: f.sort }); $("#search").value = ""; }));
-  } else if (S.view === "board") {
-    list.innerHTML = '<div class="status-board">' + STATUSES.filter((s) => !S.filters.status.length || S.filters.status.includes(s)).map((s) => {
-      const rows = issues.map((i, idx) => ({i, idx})).filter(({i}) => i.status === s);
-      return '<section class="board-column"><h3 class="pill s-' + s + '">' + STATUS_LABEL[s] + ' (' + rows.length + ')</h3>' + rows.map(({i, idx}) => rowHtml(i, idx, fresh)).join('') + '</section>';
-    }).join('') + '</div>';
-  } else if (S.view === "backlog") {
-    list.innerHTML = backlogHtml(issues, fresh);
-  } else {
-    list.innerHTML = issues.map((i, idx) => rowHtml(i, idx, fresh)).join("");
-  }
+  } else renderWindows(issues, fresh);
   const shown = issues.length;
   $("#list-footer").innerHTML = `<span>${shown < S.list.total ? `Showing ${shown} of ${S.list.total}` : `${S.list.total} issue${S.list.total === 1 ? "" : "s"}`}</span>
     ${shown < S.list.total ? '<button class="btn btn-sm" id="more">Show more</button>' : ""}
@@ -722,10 +799,15 @@ function setCursor(idx, { open = false, scroll = true } = {}) {
   idx = Math.max(0, Math.min(issues.length - 1, idx));
   $$(".issue-row.cursor").forEach((r) => r.classList.remove("cursor"));
   S.cursor = idx;
+  // Keyboard movement follows logical rows, including rows outside the DOM and
+  // folded groups. Unfold the destination group before revealing its window.
+  if (S.view === "backlog" && S.collapsed.delete(issues[idx].area || "")) {
+    store(`collapsed.${S.slug}`, [...S.collapsed]); renderList();
+  }
+  if (scroll) revealRow(issues[idx].id); else paintWindows();
   const row = $(`.issue-row[data-idx="${idx}"]`);
   if (row) {
     row.classList.add("cursor");
-    if (scroll) row.scrollIntoView({ block: "nearest" });
   }
   if (open) go(S.slug, issues[idx].id);
 }
@@ -754,15 +836,22 @@ function renderEmptyDetail() {
   $$(".stat", $("#detail")).forEach((b) => b.addEventListener("click", () => setFilter((f) => { f.status = [b.dataset.status]; })));
 }
 
+let issueRequest = null, issueSeq = 0;
 async function openIssue(id) {
+  const seq = ++issueSeq, slug = S.slug, hash = location.hash;
+  issueRequest?.abort();
+  const request = issueRequest = new AbortController();
   let issue;
   try {
-    issue = await api("GET", `/api/issues/${encodeURIComponent(id)}`);
+    issue = await api("GET", `/api/issues/${encodeURIComponent(id)}`, undefined, {}, request.signal);
   } catch (e) {
+    if (e.name === "AbortError" || seq !== issueSeq || hash !== location.hash) return;
     fail(e);
     closeDetail();
     return;
   }
+  finally { if (issueRequest === request) issueRequest = null; }
+  if (seq !== issueSeq || slug !== S.slug || hash !== location.hash) return;
   if (issue.project !== S.slug) { go(issue.project, issue.id); return; }
   if (issue.redirected_from) {
     toast(`${issue.redirected_from} was merged into ${issue.id}`);
@@ -778,22 +867,25 @@ async function openIssue(id) {
   document.body.classList.add("detail-open");
   const idx = S.list.issues.findIndex((i) => i.id === issue.id);
   if (idx >= 0) S.cursor = idx;
+  if (changed && idx >= 0) setCursor(idx); else paintWindows();
   $$(".issue-row").forEach((r) => {
     const sel = r.dataset.id === issue.id;
     r.classList.toggle("selected", sel);
     r.classList.toggle("cursor", sel);
     r.setAttribute("aria-selected", String(sel));
-    if (sel && changed) r.scrollIntoView({ block: "nearest" });
   });
   renderDetail(changed);
   resumeSendPolling();
 }
 
 function closeDetail(updateHash = true) {
+  ++issueSeq;
+  issueRequest?.abort();
   S.openId = null;
   S.issue = null;
   S.handoff = null;
   S.editing = null;
+  paintWindows();
   document.body.classList.remove("detail-open");
   $$(".issue-row.selected").forEach((r) => r.classList.remove("selected"));
   renderEmptyDetail();
@@ -1178,9 +1270,12 @@ async function refreshAll() {
 
 async function refreshProject() {
   if (!S.slug) return;
+  const slug = S.slug;
   try {
     const before = JSON.stringify(S.project?.build ?? null) + S.project?.builds_enabled;
-    S.project = await api("GET", `/api/projects/${encodeURIComponent(S.slug)}`);
+    const project = await api("GET", `/api/projects/${encodeURIComponent(slug)}`);
+    if (slug !== S.slug) return;
+    S.project = project;
     S.lastChange = S.project.last_change;
     // A new build: the filter bar shows it (the stamped issues refresh through their own activity).
     if (JSON.stringify(S.project.build ?? null) + S.project.builds_enabled !== before && S.list) renderFilters();
@@ -1473,25 +1568,34 @@ function showLiveState(ok) {
 function connectLive(slug) {
   if (S.live) { S.live.close(); S.live = null; }
   showLiveState(false);
-  if (typeof EventSource === "undefined") return;
-  const es = new EventSource(`/api/projects/${encodeURIComponent(slug)}/events`);
-  S.live = es;
-  es.addEventListener("hello", () => {
-    const wasDown = !S.liveOk;
-    showLiveState(true);
-    if (wasDown) scheduleLive({ all: true }); // catch up on anything missed while disconnected
-  });
-  es.addEventListener("change", (ev) => {
-    let data;
-    try { data = JSON.parse(ev.data); } catch (e) { return; }
-    const issues = new Set(), handoff = data.changes.some((c) => c.type === "handoff");
-    data.changes.forEach((c) => c.issue && issues.add(c.issue));
-    scheduleLive({ issues, handoff });
-  });
-  es.addEventListener("refresh", () => scheduleLive({ all: true }));
-  es.onerror = () => {
-    showLiveState(false);
-  };
+  if (typeof SharedWorker === "undefined") return; // short polling needs no persistent connection
+  try {
+    const worker = new SharedWorker("./live-worker.js", { name: "pairdesk-live" });
+    const port = worker.port;
+    const subscribe = () => port.postMessage({ type: "subscribe", slug });
+    const heartbeat = setInterval(subscribe, 30000);
+    const live = S.live = {
+      subscribe,
+      close() { clearInterval(heartbeat); port.postMessage({ type: "close" }); port.close(); },
+    };
+    worker.onerror = () => { if (S.live === live) { live.close(); S.live = null; showLiveState(false); } };
+    port.onmessage = ({ data: message }) => {
+      if (S.live !== live || S.slug !== slug) return;
+      const { type, data } = message;
+      if (type === "hello") {
+        const wasDown = !S.liveOk;
+        showLiveState(true);
+        if (wasDown) scheduleLive({ all: true });
+      } else if (type === "change") {
+        const issues = new Set(), handoff = data.changes.some(c => c.type === "handoff");
+        data.changes.forEach(c => c.issue && issues.add(c.issue));
+        scheduleLive({ issues, handoff });
+      } else if (type === "refresh") scheduleLive({ all: true });
+      else if (type === "offline") showLiveState(false);
+    };
+    port.start();
+    subscribe();
+  } catch { showLiveState(false); }
 }
 
 function scheduleLive({ issues, handoff, all }) {
@@ -1865,6 +1969,8 @@ function bindEvents() {
     go(S.slug, row.dataset.id);
   });
   $("#list").addEventListener("mousedown", (e) => { if (e.shiftKey) e.preventDefault(); }); // no text selection on shift-click
+  $("#list").addEventListener("scroll", scheduleWindows, { passive: true });
+  new ResizeObserver(scheduleWindows).observe($("#list"));
   $("#selection-bar").addEventListener("click", (e) => {
     const a = e.target.closest("[data-sel]")?.dataset.sel;
     if (a === "merge") openMergeDialog("merge");
@@ -2052,7 +2158,9 @@ function bindEvents() {
 
   document.addEventListener("keydown", onKey);
   window.addEventListener("hashchange", route);
-  document.addEventListener("visibilitychange", () => { if (!document.hidden) poll(true); });
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) { S.live?.subscribe(); poll(true); } });
+  window.addEventListener("pagehide", () => { S.live?.close(); S.live = null; });
+  window.addEventListener("pageshow", e => { if (e.persisted && S.slug) { connectLive(S.slug); poll(true); } });
   bindSplitter();
 }
 
@@ -2217,8 +2325,10 @@ async function poll(force = false) {
   if (S.liveOk && !force && Date.now() - lastPoll < 60000) return; // the stream brings changes
   lastPoll = Date.now();
   polling = true;
+  const slug = S.slug;
   try {
-    const p = await api("GET", `/api/projects/${encodeURIComponent(S.slug)}`);
+    const p = await api("GET", `/api/projects/${encodeURIComponent(slug)}`);
+    if (slug !== S.slug) return;
     if (p.last_change !== S.lastChange) {
       const first = S.lastChange === undefined;
       S.project = p;
@@ -2234,7 +2344,7 @@ async function poll(force = false) {
       }
     }
   } catch (e) { /* offline for a moment; the next tick retries */ }
-  polling = false;
+  finally { polling = false; }
 }
 
 // ------------------------------------------------------------------------------ boot

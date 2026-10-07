@@ -6,6 +6,19 @@ and the project uses [Semantic Versioning](https://semver.org/). The version liv
 
 ## [Unreleased]
 
+## [1.7.2] - 2026-10-08
+
+### Fixed
+
+- Deep links and additional tabs no longer compete with abandoned per-page live
+  streams for the browser's HTTP/1.1 connections. Tabs share one stream across
+  projects, close subscriptions on navigation, and fall back to polling when
+  shared workers are unavailable. Stale navigation reads cannot replace detail.
+- Triage, grouped backlog and board lists render a viewport window with keyed
+  row updates. Keyboard movement, range selection and folded groups operate on
+  logical issues rather than only the rendered rows. See the
+  [browser performance report](docs/performance-1.7.2.md) for measured results.
+
 ## [1.7.1] - 2026-10-07
 
 ### Fixed

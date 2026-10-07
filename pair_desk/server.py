@@ -71,7 +71,7 @@ class ChangeHub:
     def __init__(self, db_path: Path, interval: float = WATCH_INTERVAL):
         self.db_path = Path(db_path)
         self.interval = interval
-        self._subs: dict[str, set[queue.Queue]] = {}
+        self._subs: dict[str | None, set[queue.Queue]] = {}
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -98,13 +98,13 @@ class ChangeHub:
         if self._thread:
             self._thread.join(timeout=2)
 
-    def subscribe(self, slug: str) -> queue.Queue:
+    def subscribe(self, slug: str | None) -> queue.Queue:
         q: queue.Queue = queue.Queue(maxsize=1000)
         with self._lock:
             self._subs.setdefault(slug, set()).add(q)
         return q
 
-    def unsubscribe(self, slug: str, q: queue.Queue) -> None:
+    def unsubscribe(self, slug: str | None, q: queue.Queue) -> None:
         with self._lock:
             self._subs.get(slug, set()).discard(q)
 
@@ -116,7 +116,7 @@ class ChangeHub:
         with self._lock:
             self.seq += 1
             payload = {**payload, "seq": self.seq}
-            targets = [q for k, v in self._subs.items() if slug is None or k == slug for q in v]
+            targets = [q for k, v in self._subs.items() if slug is None or k == slug or k is None for q in v]
         for q in targets:
             try:
                 q.put_nowait(payload)
@@ -464,11 +464,12 @@ class Handler(BaseHTTPRequestHandler):
     def api_issue_build_launch(self, key, action):
         self._launch(self.store.get_issue(key, full=False)["build"], action)
 
+    @route("GET", r"/api/events")
     @route("GET", r"/api/projects/([^/]+)/events")
-    def api_events(self, slug):
-        """Server-Sent Events: `change` (feed rows of this project) and `refresh` (reload)."""
-        project = self.store.get_project(slug)
-        q = self.server.hub.subscribe(project["slug"])
+    def api_events(self, slug=None):
+        """Server-Sent Events for one project, or all projects for the shared tab worker."""
+        project_slug = self.store.get_project(slug)["slug"] if slug is not None else None
+        q = self.server.hub.subscribe(project_slug)
         self.close_connection = True
         try:
             self.send_response(200)
@@ -478,7 +479,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Connection", "close")
             self._cors()
             self.end_headers()
-            hello = json.dumps({"type": "hello", "project": project["slug"], "cursor": self.store.event_cursor()})
+            hello = json.dumps({"type": "hello", "project": project_slug, "cursor": self.store.event_cursor()})
             self.wfile.write(f"retry: 3000\nevent: hello\ndata: {hello}\n\n".encode("utf-8"))
             self.wfile.flush()
             while True:
@@ -496,7 +497,7 @@ class Handler(BaseHTTPRequestHandler):
         except (ConnectionError, OSError):
             pass
         finally:
-            self.server.hub.unsubscribe(project["slug"], q)
+            self.server.hub.unsubscribe(project_slug, q)
 
     @route("GET", r"/api/projects/([^/]+)/suggest-groups")
     def api_suggest_groups(self, slug):

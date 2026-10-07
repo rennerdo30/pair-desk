@@ -67,9 +67,9 @@ class SseTests(ApiCase):
         self.store.create_project("mygame", "MyGame", "MG")
         self.store.create_issue("mygame", {"title": "x"})
 
-    def open_stream(self):
+    def open_stream(self, path="/api/projects/mygame/events"):
         conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
-        conn.request("GET", "/api/projects/mygame/events")
+        conn.request("GET", path)
         res = conn.getresponse()
         self.assertEqual(res.status, 200)
         self.assertTrue(res.getheader("Content-Type").startswith("text/event-stream"))
@@ -125,6 +125,28 @@ class SseTests(ApiCase):
 
     def test_unknown_project_is_404(self):
         self.assertEqual(self.req("GET", "/api/projects/nope/events")[0], 404)
+
+    def test_shared_stream_receives_each_project_and_project_stream_stays_scoped(self):
+        self.store.create_project("other", "Other", "OT")
+        self.store.create_issue("other", {"title": "Other issue"})
+        all_events = self.open_stream("/api/events")
+        project_events = self.open_stream()
+        self.assertIsNone(self.next_event(all_events, "hello")["data"]["project"])
+        self.next_event(project_events, "hello")
+        self.req("POST", "/api/issues/OT-1/comments", {"text": "other change"})
+        # The watcher may still publish fixture writes after the hello cursor;
+        # wait for the requested write, rather than assuming it is the first batch.
+        deadline = time.time() + 5
+        while True:
+            change = self.next_event(all_events, "change", max(0.05, deadline - time.time()))
+            if any(c.get("issue") == "OT-1" and c["type"] == "comment" for c in change["data"]["changes"]):
+                break
+        self.assertEqual({c["project"] for c in change["data"]["changes"]}, {"other"})
+        self.req("POST", "/api/issues/MG-1/comments", {"text": "mygame change"})
+        own = self.next_event(project_events, "change")
+        self.assertEqual({c["project"] for c in own["data"]["changes"]}, {"mygame"})
+        own_shared = self.next_event(all_events, "change")
+        self.assertEqual({c["project"] for c in own_shared["data"]["changes"]}, {"mygame"})
 
 
 class McpPd1Tests(McpCase):
