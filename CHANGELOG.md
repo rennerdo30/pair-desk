@@ -6,6 +6,18 @@ and the project uses [Semantic Versioning](https://semver.org/). The version liv
 
 ## [Unreleased]
 
+## [1.7.1] - 2026-10-07
+
+### Fixed
+
+- Concurrent agent load: count list metadata through covering indexes after pagination,
+  reuse one historical-text search for pages and facets, and keep MCP progress/step
+  acknowledgements compact without loading complete comment threads. Existing HTTP,
+  MCP and CLI response contracts remain unchanged. The [mixed-load report](docs/performance-1.7.1.md)
+  includes per-endpoint throughput, latency and remaining tail regressions.
+
+## [1.7.0] - 2026-10-05
+
 ### Fixed
 
 - Large desks and concurrent agents: page issues before loading counts, share facet/search work,

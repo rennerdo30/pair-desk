@@ -12,7 +12,7 @@
       "name": "agent-pair-programming",
       "source": "./",
       "description": "Pair Desk web UI, MCP tools, skills, session-start and prompt hooks, and a channel that pushes owner activity into sessions.",
-      "version": "1.7.0",
+      "version": "1.7.1",
       "author": {
         "name": "rennerdo30",
         "url": "https://github.com/rennerdo30"
