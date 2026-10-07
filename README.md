@@ -572,6 +572,8 @@ node scripts/test-ui-refresh.mjs           # refresh cancellation and view/navig
 For isolated large-desk HTTP/MCP/browser benchmarks, read
 [the performance report and reproduction steps](docs/performance.md). The benchmark
 driver uses a copied database and owns its test processes; it never restarts a live desk.
+The [1.7.1 mixed-load report](docs/performance-1.7.1.md) adds progress, handoff and CLI
+traffic alongside 20 MCP clients, with per-endpoint throughput and latency.
 
 CI runs the tests and the smoke test on Linux, macOS and Windows with Python 3.11 to 3.13; the
 browser check is a separate, manually started workflow. See [CONTRIBUTING.md](CONTRIBUTING.md).

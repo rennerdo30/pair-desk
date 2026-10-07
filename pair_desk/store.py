@@ -194,6 +194,8 @@ PERFORMANCE_INDEXES = (
     "CREATE INDEX IF NOT EXISTS issues_children ON issues(parent_id, status) WHERE merged_into IS NULL",
     # Cover the facet inputs instead of re-reading the large issue body/plan for every group.
     "CREATE INDEX IF NOT EXISTS issues_facets ON issues(project_id, status, kind, priority, area, size, milestone, merged_into, location)",
+    "CREATE INDEX IF NOT EXISTS comments_verdict_covering ON comments(issue_id, id DESC, verdict) WHERE verdict IS NOT NULL",
+    "CREATE INDEX IF NOT EXISTS issues_children_covering ON issues(parent_id, merged_into, status)",
 )
 
 # -- plans ------------------------------------------------------------------------------------
@@ -1488,11 +1490,28 @@ class Store:
         limit = max(1, min(limit, 5000))
         offset = max(0, offset)
         summary = str(filters.get("summary") or "").strip().lower() in ("1", "true", "yes")
+        facets = ("status", "kind", "priority", "area", "seed", "size", "milestone")
+        common = {k: v for k, v in filters.items() if k not in (*facets, "merged")}
+        varying = {k: v for k, v in filters.items() if k in (*facets, "merged")}
         where, params = self._facet_where(pid, filters)
+        cw, cp = self._facet_where(pid, common)
+        if str(filters.get("q") or "").strip():
+            # Search historical text once for both the page and facets. Bind the narrow
+            # id set as one JSON parameter: no temporary writes on query-only readers,
+            # and no SQLite host-parameter limit when a large project matches.
+            matches = json.dumps([r["id"] for r in self._read(
+                "SELECT i.id FROM issues i JOIN projects p ON p.id=i.project_id WHERE " + cw, cp)])
+            membership = " AND i.id IN (SELECT value FROM json_each(?))"
+            where, params = self._facet_where(pid, varying)
+            where += membership
+            params.append(matches)
+            cw, cp = "i.project_id=?" + membership, [pid, matches]
         base = "FROM issues i JOIN projects p ON p.id=i.project_id WHERE " + where
         # Sort/page narrow ids FIRST. SQLite otherwise evaluates correlated counts for many
         # rows that the LIMIT later discards, and sorts full bodies/plans in its temp b-tree.
-        # Aggregate metadata once for just this page, with indexed joins into child tables.
+        # Count through covering indexes for just this page. Grouped comment aggregates
+        # read every historical row to inspect verdicts; their wide text pages dominate
+        # cold reads during continuous writes. A separate verdict seek reads at most one.
         order = self.SORTS[sort] + ", i.number DESC"
         # Older system SQLite libraries support CTEs but not the explicit 3.35 hint.
         # Reused CTEs still share work there; do not raise the runtime requirement.
@@ -1501,27 +1520,20 @@ class Store:
             "id", "project_id", "number", "title", "kind", "status", "priority", "area", "tags", "location",
             "source", "external_ref", "size", "milestone", "build", "created_at", "updated_at", "closed_at", "plan"))
         rows = self._read(
-            "WITH page AS " + materialized + "(SELECT i.id " + base + " ORDER BY " + order + " LIMIT ? OFFSET ?),"
-            " cm AS (SELECT c.issue_id, COUNT(*) n, MAX(CASE WHEN c.verdict IS NOT NULL THEN c.id END) verdict_id"
-            " FROM page CROSS JOIN comments c ON page.id=c.issue_id GROUP BY c.issue_id),"
-            " att AS (SELECT a.issue_id, COUNT(*) n FROM page CROSS JOIN attachments a ON page.id=a.issue_id GROUP BY a.issue_id),"
-            " ch AS (SELECT c.parent_id, COUNT(*) n, SUM(c.status IN ('passed','closed')) done"
-            " FROM page CROSS JOIN issues c ON page.id=c.parent_id WHERE c.merged_into IS NULL GROUP BY c.parent_id)"
+            "WITH page AS " + materialized + "(SELECT i.id " + base + " ORDER BY " + order + " LIMIT ? OFFSET ?)"
             " SELECT " + columns + ", p.prefix, p.slug, par.number parent_number, merged.number merged_number,"
-            " COALESCE(ch.n,0) child_count, COALESCE(ch.done,0) child_done,"
-            " COALESCE(cm.n,0) comment_count, COALESCE(att.n,0) attachment_count, verdict.verdict last_verdict"
+            " (SELECT COUNT(*) FROM comments c WHERE c.issue_id=i.id) comment_count,"
+            " (SELECT COUNT(*) FROM attachments a WHERE a.issue_id=i.id) attachment_count,"
+            " (SELECT c.verdict FROM comments c WHERE c.issue_id=i.id AND c.verdict IS NOT NULL ORDER BY c.id DESC LIMIT 1) last_verdict,"
+            " (SELECT COUNT(*) FROM issues c WHERE c.parent_id=i.id AND c.merged_into IS NULL) child_count,"
+            " (SELECT COUNT(*) FROM issues c WHERE c.parent_id=i.id AND c.merged_into IS NULL AND c.status IN ('passed','closed')) child_done"
             " FROM page JOIN issues i ON i.id=page.id JOIN projects p ON p.id=i.project_id"
             " LEFT JOIN issues par ON par.id=i.parent_id LEFT JOIN issues merged ON merged.id=i.merged_into"
-            " LEFT JOIN ch ON ch.parent_id=i.id LEFT JOIN cm ON cm.issue_id=i.id LEFT JOIN att ON att.issue_id=i.id"
-            " LEFT JOIN comments verdict ON verdict.id=cm.verdict_id ORDER BY " + order,
+            " ORDER BY " + order,
             params + [limit, offset])
-        facets = ("status", "kind", "priority", "area", "seed", "size", "milestone")
         # Search/source/tag/ref/since apply to every facet. Evaluate them once instead of
         # rescanning issue bodies and comments eight times. Each facet still ignores ONLY
         # its own filter (and merged counts retain their special status/merged semantics).
-        common = {k: v for k, v in filters.items() if k not in (*facets, "merged")}
-        cw, cp = self._facet_where(pid, common)
-        varying = {k: v for k, v in filters.items() if k in (*facets, "merged")}
         tw, tp = self._facet_where(pid, varying)
         parts = ["SELECT 'total' facet, NULL v, COUNT(*) n FROM candidates i WHERE " + tw]
         count_params = cp + tp
@@ -1818,7 +1830,7 @@ class Store:
         return self.get_issue(self._key(row))
 
     def update_step(self, key: str, index: Any, state: Any = None, commit: Any = None, note: Any = None,
-                    text: Any = None, actor: str | None = None) -> dict:
+                    text: Any = None, actor: str | None = None, *, full: bool = True) -> dict:
         """Change one step (1-based `index`): its state, the commit that did it, a note, or its text."""
         row = self._issue_row(key, follow=True)
         plan = parse_plan(row["plan"])
@@ -1843,7 +1855,7 @@ class Store:
                 merged.pop(field, None)
         new = normalize_step(merged)
         if new == old:
-            return self.get_issue(self._key(row))
+            return self.get_issue(self._key(row), full=full)
         plan["steps"][n - 1] = new
         actor = actor or "agent"
         now = self.now()
@@ -1861,7 +1873,7 @@ class Store:
             auto = plan_status(row["status"], old.get("state"), new["state"], plan)
             if auto:
                 self._apply_changes(c, row["id"], dict(row), {"status": auto[0]}, actor, now, reason=auto[1])
-        return self.get_issue(self._key(row))
+        return self.get_issue(self._key(row), full=full)
 
     # -- parent / child groups ---------------------------------------------------------------
 
