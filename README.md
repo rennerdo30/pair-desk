@@ -56,7 +56,7 @@ What it runs and touches:
 | Claude Code | only the official plugin commands: `claude plugin marketplace add rennerdo30/pair-desk`, `claude plugin marketplace update agent-pair-programming`, `claude plugin install agent-pair-programming@agent-pair-programming` |
 | Codex | `integrations/codex/install.py`: a `pair-desk` MCP server and a SessionStart hook in `~/.codex/config.toml` (backed up first; nothing else in the file changes), and three skills in `~/.agents/skills/` |
 | opencode | `integrations/opencode/install.py`: a `pair-desk` MCP server in `~/.config/opencode/opencode.json(c)` (backed up first), a small plugin in `~/.config/opencode/plugins/`, and the same skills |
-| Google Antigravity | `integrations/antigravity/install.py`: a `pair-desk` MCP server in `~/.gemini/antigravity/mcp_config.json`, a marked section in the global `~/.gemini/GEMINI.md` rules (both backed up first), and the shared skills in `~/.agents/skills/` |
+| Google Antigravity | `integrations/antigravity/install.py`: a `pair-desk` MCP server and lifecycle hooks in `~/.gemini/config/`, skills for the app/IDE and CLI, and a marked section in `~/.gemini/GEMINI.md` (changed config files backed up first) |
 
 Codex, opencode and Antigravity run Pair Desk by absolute path, so they need a copy that stays. Run from a git
 clone, the installer uses the clone. Run through uvx, pipx or the bootstrap scripts, it first copies
@@ -524,40 +524,51 @@ python integrations/antigravity/install.py --dry-run
 
 An explicit `antigravity` selection works even when the desktop app's optional CLI is
 absent. The installer adds a local stdio MCP server to
-`~/.gemini/antigravity/mcp_config.json`, the three Pair Desk skills to `~/.agents/skills/`,
-and a marked section to `~/.gemini/GEMINI.md`. It preserves other MCP servers and global
-rules, backs up changed config/rules, and does nothing on an unchanged second run.
-The skills share ownership with Codex and opencode; uninstalling one keeps the skills
-the others use. No network service or third-party Python package is required.
+`~/.gemini/config/mcp_config.json`, native hooks to `~/.gemini/config/hooks.json`, the
+three Pair Desk skills to `~/.gemini/config/skills/` (app/IDE) and
+`~/.gemini/antigravity-cli/skills/` (CLI), and a marked section to `~/.gemini/GEMINI.md`.
+It preserves other MCP servers, hooks and global rules, backs up changed configuration,
+and does nothing on an unchanged second run. Existing Pair Desk environment overrides,
+working directory and disabled settings are retained on update. No network service or
+third-party Python package is required. These paths and formats follow Google's
+[MCP](https://antigravity.google/docs/mcp/),
+[skills](https://antigravity.google/docs/skills/),
+[rules](https://antigravity.google/docs/rules/) and
+[hooks](https://antigravity.google/docs/hooks/) documentation.
 
 Restart Antigravity and refresh the servers in its MCP settings. Ask the agent to call
 `pair-desk`'s `list_projects`, then use the `pair-desk` skill. Link the game repository
 with `python desk.py link --project mygame --path /path/to/mygame`. Antigravity may launch
-MCP outside that workspace, so the installed rules resolve the workspace's project and
+MCP outside that workspace, so the native hook context identifies the workspace's project and the rules
 pass it explicitly to desk tools. The full MCP tool set supports issues, reports, plans,
 builds, handoffs, attachments and game commands; only the owner gives a passed verdict.
 
-Session context and new owner activity use the global rules, which instruct the agent
-to run the existing `hook session-start` and `hook user-prompt-submit` commands with
-the workspace and session ID. They are instructions followed by the agent, rather than
-native Antigravity event hooks. Idle push channels remain a Claude Code feature.
+The native `SessionStart` hook supplies linked-project counts, the current build and
+handoff context. `PreInvocation` injects new owner activity before the model runs, with
+separate cursors for each conversation and linked project. The adapter translates
+Antigravity's `workspacePaths`/`conversationId` input and returns its `injectSteps`
+format. Unlinked workspaces and missing desks are ignored. Idle push channels remain
+a Claude Code feature.
 The web desk still updates live for every client. `GEMINI.md` is a shared Gemini global
 rules file; use `--no-rules` in the standalone installer if you manage it yourself.
 
-Standalone options include `--config-dir`, `--rules-file`, `--skills-dir`, `--desk`,
-`--python`, `--no-skills`, `--no-rules`, `--force`, `--dry-run` and `--uninstall`.
-For versions using a different skill directory, select it with `--skills-dir`.
+Standalone options include `--config-dir`, `--rules-file`, `--skills-dir`, `--cli-skills-dir`,
+`--desk`, `--python`, `--no-skills`, `--no-rules`, `--no-hooks`, `--force`, `--dry-run` and
+`--uninstall`. For legacy versions using `~/.gemini/antigravity/`, select it with
+`--config-dir` and `--skills-dir`. Shared custom skill directories retain skills until
+the last owning integration is removed.
 `--force` replaces only foreign skills with the same names; existing config/rules always
 receive backups. `python desk.py uninstall antigravity --yes --no-link` removes the
-Pair Desk MCP entry and rules section while retaining other tools' shared skills and
-the desk's data.
+Pair Desk MCP entry, hooks and rules section while retaining other tools' settings and
+the desk's data. In Antigravity CLI (`agy`), use `/mcp`, `/hooks` and `/pair-desk` to
+inspect the server, inspect hooks and invoke the skill.
 
 | Capability | Claude Code | Codex | opencode | Google Antigravity |
 |---|---|---|---|---|
 | Full local MCP tool set and CLI fallback | Yes | Yes | Yes | Yes |
 | Skills, plans, handoffs and owner verification | Yes | Yes | Yes | Yes |
-| Session context | Plugin hook | SessionStart hook (trust required) | Plugin | Agent follows global rules |
-| New owner activity during work | Prompt hook | Read desk through tools | Read desk through tools | Agent follows global rules |
+| Session context | Plugin hook | SessionStart hook (trust required) | Plugin | SessionStart hook |
+| New owner activity during work | Prompt hook | Read desk through tools | Read desk through tools | PreInvocation hook |
 | Owner activity pushed while idle | Opt-in Claude channel | No native integration | No native integration | No native integration |
 
 ## CLI (for agents and scripts)

@@ -3,7 +3,8 @@
 - Timestamped backups of config files before they change.
 - Writing a file only when its content changes (so re-running an installer is a no-op).
 - The Pair Desk skills, generated from `skills/*/SKILL.md` of this repo for tools that read the
-  cross-tool skill folder `~/.agents/skills` (Codex, opencode and Antigravity). The Claude Code
+  cross-tool skill folder `~/.agents/skills` (Codex and opencode), or a client's native skill
+  directories (Antigravity). The Claude Code
   wording (plugin root, `${CLAUDE_PLUGIN_ROOT}`, `/agent-pair-programming:serve`) is rewritten to
   the absolute `desk.py` path and the installed skill names. Each installed skill folder carries
   a marker listing which installers use it, so uninstalling Codex leaves the copy opencode still

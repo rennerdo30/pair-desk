@@ -8,8 +8,8 @@ and the project uses [Semantic Versioning](https://semver.org/). The version liv
 
 ### Added
 
-- Google Antigravity installer: local MCP tools, shared Pair Desk skills and managed
-  global rules for workspace context and owner activity. Install/update/uninstall
+- Google Antigravity app/IDE and CLI installer: local MCP tools, native skills,
+  lifecycle hooks for workspace context and owner activity, and managed global rules. Install/update/uninstall
   support desktop detection, dry runs, backups and preservation of other client settings.
 
 ## [1.7.2] - 2026-10-08

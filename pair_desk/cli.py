@@ -850,14 +850,17 @@ def _hook_input() -> dict:
         return {}
 
 
-def cmd_hook(args, data_dir: Path) -> int:
+def cmd_hook(args, data_dir: Path, payload: dict | None = None) -> int:
     """Plugin hooks. Must never block or fail the session, and never create a data folder.
 
     session-start: the counts line plus the handoff's next step and traps, and it starts this
     session's notification cursor. user-prompt-submit: owner activity since the session last
     looked (see notify.py)."""
+    if args.event in ("antigravity-session-start", "antigravity-pre-invocation"):
+        from integrations.antigravity.hook import run_hook
+        return run_hook(args.event, data_dir)
     try:
-        data = _hook_input()
+        data = _hook_input() if payload is None else payload
         cwd, session_id = data.get("cwd"), data.get("session_id")
         if args.event == "session-start":
             # The web desk starts with the session (and is replaced when an older version runs), never blocking it.
@@ -1119,7 +1122,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     add("mcp", "run the stdio MCP server (used by the Claude Code plugin)")
     s = add("hook", "plugin hook entry point")
-    s.add_argument("event", choices=["session-start", "user-prompt-submit"])
+    s.add_argument("event", choices=["session-start", "user-prompt-submit",
+                                    "antigravity-session-start", "antigravity-pre-invocation"])
     s = add("outbox", "replay desk writes queued where the desk was read-only (a sandboxed agent job, PD-4)")
     s.add_argument("action", choices=["show", "replay"])
     s.add_argument("path", help="the outbox file (.cache/pair-desk-outbox.jsonl in the job's worktree)")

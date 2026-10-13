@@ -139,7 +139,7 @@ NOTES = {
              "Pair Desk SessionStart hook.",
     "opencode": "  Restart opencode afterwards.",
     "antigravity": "  Restart Google Antigravity and refresh its MCP servers afterwards. "
-                   "Session context and owner activity use the installed global rules.",
+                   "SessionStart and PreInvocation hooks provide context and owner activity.",
 }
 
 
@@ -173,12 +173,15 @@ def tool_available(tool: str, explicit: bool = False) -> bool:
         return True
     if tool != "antigravity":
         return False
+    if _which("agy"):
+        return True
     from integrations.antigravity.install import config_dir
     candidates = (Path("/Applications/Antigravity.app"), Path.home() / "Applications" / "Antigravity.app",
                   Path("/usr/share/applications/antigravity.desktop"),
                   Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local")
                   / "Programs" / "Antigravity" / "Antigravity.exe")
-    return explicit or config_dir().is_dir() or any(path.exists() for path in candidates)
+    legacy_dir = Path.home() / ".gemini" / "antigravity"
+    return explicit or config_dir().is_dir() or legacy_dir.is_dir() or any(path.exists() for path in candidates)
 
 
 def run_command(argv: list[str]) -> int:

@@ -22,6 +22,10 @@ class AntigravityInstallTests(TempDirCase):
         self.config = self.folder / "mcp_config.json"
         self.rules = self.folder.parent / "GEMINI.md"
         self.skills = self.tmp / "skills"
+        self.cli_skills = self.tmp / "cli-skills"
+        self.hooks = self.folder / "hooks.json"
+        self.original_hooks = '{"other-hook":{"PreInvocation":[{"command":"other"}]}}'
+        common.write_text(self.hooks, self.original_hooks)
         self.original_config = json.dumps({"mcpServers": {
             "other": {"command": "other", "args": ["keep"]}}, "preferences": {"keep": True}})
         self.original_rules = "# Existing rules\r\n\r\nKeep these exactly.\r\n"
@@ -31,7 +35,8 @@ class AntigravityInstallTests(TempDirCase):
     def install(self, *extra):
         with contextlib.redirect_stdout(io.StringIO()) as out, contextlib.redirect_stderr(io.StringIO()) as err:
             code = antigravity.run(["--config-dir", str(self.folder), "--rules-file", str(self.rules),
-                                   "--skills-dir", str(self.skills), "--python", sys.executable, *extra])
+                                   "--skills-dir", str(self.skills), "--cli-skills-dir", str(self.cli_skills),
+                                   "--python", sys.executable, *extra])
         return code, out.getvalue() + err.getvalue()
 
     def test_merge_backup_idempotency_and_uninstall_preserve_user_content(self):
@@ -41,6 +46,11 @@ class AntigravityInstallTests(TempDirCase):
         self.assertEqual(config["mcpServers"]["other"], {"command": "other", "args": ["keep"]})
         self.assertEqual(config["preferences"], {"keep": True})
         self.assertEqual(config["mcpServers"]["pair-desk"]["command"], sys.executable)
+        hooks = json.loads(self.hooks.read_text())
+        self.assertEqual(hooks["other-hook"], json.loads(self.original_hooks)["other-hook"])
+        self.assertIn("antigravity-session-start", hooks["pair-desk"]["SessionStart"][0]["command"])
+        self.assertIn("antigravity-pre-invocation", hooks["pair-desk"]["PreInvocation"][0]["command"])
+        self.assertTrue((self.cli_skills / "pair-desk" / "SKILL.md").is_file())
         self.assertTrue(common.read_text(self.rules).startswith(self.original_rules))
         first = self.config.read_bytes(), self.rules.read_bytes()
         code, out = self.install()
@@ -54,6 +64,8 @@ class AntigravityInstallTests(TempDirCase):
         self.assertEqual(code, 0, out)
         self.assertEqual(json.loads(self.config.read_text()), json.loads(self.original_config))
         self.assertEqual(common.read_text(self.rules), self.original_rules)
+        self.assertEqual(json.loads(self.hooks.read_text()), json.loads(self.original_hooks))
+        self.assertFalse((self.cli_skills / "pair-desk").exists())
         self.assertFalse((self.skills / "pair-desk").exists())
         self.assertIn("Nothing to change", self.install("--uninstall")[1])
 
@@ -62,6 +74,8 @@ class AntigravityInstallTests(TempDirCase):
         self.assertEqual(self.install("--dry-run")[0], 0)
         self.assertEqual(before, (self.config.read_bytes(), self.rules.read_bytes()))
         self.assertFalse(self.skills.exists())
+        self.assertFalse(self.cli_skills.exists())
+        self.assertEqual(common.read_text(self.hooks), self.original_hooks)
         self.assertEqual(list(self.folder.parent.rglob("*.pair-desk-backup-*")), [])
 
     def test_invalid_config_or_rules_prevents_all_writes(self):
@@ -163,7 +177,7 @@ class AntigravityInstallTests(TempDirCase):
                                      "--yes", "--no-link", "--app-dir", str(app), "--python", sys.executable],
                                     cwd=self.tmp, env=env, text=True, capture_output=True, timeout=30)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        config = json.loads((home / ".gemini" / "antigravity" / "mcp_config.json").read_text())
+        config = json.loads((home / ".gemini" / "config" / "mcp_config.json").read_text())
         self.assertEqual(config["mcpServers"]["pair-desk"]["args"], [common.fwd(app / "desk.py"), "mcp"])
         marker = json.loads((app / installer.APP_MARKER).read_text())
         marker["used_by"].append("codex")
@@ -174,3 +188,98 @@ class AntigravityInstallTests(TempDirCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertTrue(app.exists())
         self.assertEqual(json.loads((app / installer.APP_MARKER).read_text())["used_by"], ["codex"])
+
+    def test_invalid_hooks_prevents_other_config_changes(self):
+        common.write_text(self.hooks, "[]")
+        code, out = self.install()
+        self.assertEqual(code, 1, out)
+        self.assertEqual(common.read_text(self.config), self.original_config)
+        self.assertEqual(common.read_text(self.rules), self.original_rules)
+        self.assertFalse(self.skills.exists())
+
+    def test_no_hooks_preserves_custom_hooks_config(self):
+        self.install("--no-hooks")
+        self.assertEqual(common.read_text(self.hooks), self.original_hooks)
+        self.install("--no-hooks", "--uninstall")
+        self.assertEqual(common.read_text(self.hooks), self.original_hooks)
+
+    def test_update_preserves_pair_desk_environment_and_disable_settings(self):
+        common.write_text(self.config, json.dumps({"mcpServers": {"pair-desk": {
+            "command": "old-python", "args": ["old-desk.py", "mcp"],
+            "env": {"PAIR_DESK_DATA": "custom-data", "PAIR_DESK_AUTHOR": "custom-agent"},
+            "cwd": "custom-workspace", "disabled": True, "disabledTools": ["queue_command"]}}}))
+        common.write_text(self.hooks, '{"pair-desk":{"enabled":false}}')
+        self.assertEqual(self.install()[0], 0)
+        entry = json.loads(self.config.read_text())["mcpServers"]["pair-desk"]
+        self.assertEqual(entry["command"], sys.executable)
+        self.assertEqual(entry["env"], {"PAIR_DESK_DATA": "custom-data", "PAIR_DESK_AUTHOR": "custom-agent"})
+        self.assertEqual(entry["cwd"], "custom-workspace")
+        self.assertTrue(entry["disabled"])
+        self.assertEqual(entry["disabledTools"], ["queue_command"])
+        self.assertFalse(json.loads(self.hooks.read_text())["pair-desk"]["enabled"])
+
+    def run_native_hook(self, event, payload, data):
+        self.assertEqual(self.install()[0], 0)
+        command = json.loads(self.hooks.read_text())["pair-desk"][event][0]["command"]
+        result = subprocess.run(command, shell=True, input=json.dumps(payload), capture_output=True,
+                                text=True, timeout=10, cwd=self.tmp,
+                                env=dict(os.environ, PAIR_DESK_DATA=str(data), PAIR_DESK_AUTOSTART="0"))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout)
+
+    def test_native_hooks_context_and_owner_activity_are_once_per_project_and_session(self):
+        data = self.tmp / "desk-data"
+        repo = self.tmp / "game project"
+        repo.mkdir()
+        (repo / ".pair-desk.json").write_text('{"project":"mygame"}')
+        (repo / "sub").mkdir()
+        payload = {"conversationId": "native-session", "workspacePaths": [str(repo), str(repo / "sub")]}
+        with Store(data) as store:
+            store.create_project("mygame", "MyGame", "MG")
+            store.create_issue("mygame", {"title": "Terrain bug", "source": "owner"}, actor="owner")
+            store.set_handoff("mygame", "## Next step\n\nFix the terrain.", author="agent")
+        context = self.run_native_hook("SessionStart", payload, data)["injectSteps"]
+        self.assertEqual(len(context), 1, "two paths linked to one project produce one context")
+        self.assertIn("Fix the terrain", context[0]["systemMessage"]["systemMessage"])
+        self.assertIn("project=mygame", context[0]["systemMessage"]["systemMessage"])
+        self.assertEqual(self.run_native_hook("PreInvocation", payload, data), {})
+        with Store(data) as store:
+            store.add_comment("MG-1", "owner", "Still broken near the cliff")
+        fresh = self.run_native_hook("PreInvocation", payload, data)["injectSteps"]
+        self.assertIn("Still broken near the cliff", fresh[0]["systemMessage"]["systemMessage"])
+        self.assertEqual(self.run_native_hook("PreInvocation", payload, data), {})
+
+    def test_native_hooks_ignore_unlinked_and_malformed_payloads_without_creating_data(self):
+        data = self.tmp / "absent-data"
+        for payload in ([], {"workspacePaths": [str(self.tmp)]},
+                        {"workspacePaths": [str(self.tmp)], "conversationId": "session"}):
+            self.assertEqual(self.run_native_hook("SessionStart", payload, data), {})
+            self.assertFalse(data.exists())
+        with Store(data) as store:
+            store.create_project("mygame", "MyGame", "MG")
+        self.assertEqual(self.run_native_hook("SessionStart", {
+            "workspacePaths": [str(self.tmp)], "conversationId": "session"}, data), {})
+        self.assertFalse((data / "notify-cursors.json").exists())
+
+    def test_native_hooks_keep_multi_workspace_conversations_independent(self):
+        data = self.tmp / "desk-data"
+        workspaces = []
+        with Store(data) as store:
+            for slug, prefix in (("first", "FI"), ("second", "SE")):
+                store.create_project(slug, slug.title(), prefix)
+                store.create_issue(slug, {"title": "Terrain bug"})
+                repo = self.tmp / slug
+                repo.mkdir()
+                (repo / ".pair-desk.json").write_text(json.dumps({"project": slug}))
+                workspaces.append(str(repo))
+        for session in ("a", "b"):
+            payload = {"conversationId": session, "workspacePaths": workspaces}
+            self.assertEqual(len(self.run_native_hook("SessionStart", payload, data)["injectSteps"]), 2)
+        with Store(data) as store:
+            store.add_comment("FI-1", "owner", "First terrain still broken")
+            store.add_comment("SE-1", "owner", "Second terrain still broken")
+        for session in ("a", "b"):
+            payload = {"conversationId": session, "workspacePaths": workspaces}
+            result = self.run_native_hook("PreInvocation", payload, data)
+            self.assertEqual(len(result["injectSteps"]), 2, result)
+            self.assertEqual(self.run_native_hook("PreInvocation", payload, data), {})
