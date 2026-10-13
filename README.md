@@ -1,7 +1,7 @@
 # Pair Desk
 
 **A local playtest desk, backlog and handoff that a game developer shares with their coding agents
-(Claude Code, Codex, opencode).**
+(Claude Code, Codex, opencode, Google Antigravity).**
 
 You play the game; your agents write the code. Pair Desk is the table between you:
 
@@ -24,7 +24,8 @@ any particular engine: locations are your game's own console commands.
 
 ## Install
 
-One command sets it up for every agent tool you have (Claude Code, Codex, opencode):
+One command sets it up for every detected agent tool (Claude Code, Codex, opencode,
+Google Antigravity):
 
 ```bash
 uvx --from git+https://github.com/rennerdo30/pair-desk pair-desk install
@@ -41,8 +42,9 @@ curl -fsSL https://raw.githubusercontent.com/rennerdo30/pair-desk/main/install.s
 irm https://raw.githubusercontent.com/rennerdo30/pair-desk/main/install.ps1 | iex             # Windows
 ```
 
-You need **Python 3.11 or newer**. The installer finds which of `claude`, `codex` and `opencode`
-are on your PATH. For each one it shows the exact steps it will run and asks before running them
+You need **Python 3.11 or newer**. The installer finds `claude`, `codex` and `opencode` on
+your PATH, plus Antigravity's CLI, existing configuration, or standard desktop installation.
+For each one it shows the exact steps it will run and asks before running them
 (`--yes` skips the questions, `--dry-run` only shows them; name tools to limit it, e.g.
 `install claude codex`). Then it offers to link the git repo you are in to a desk project, and
 prints how to start the desk.
@@ -54,15 +56,16 @@ What it runs and touches:
 | Claude Code | only the official plugin commands: `claude plugin marketplace add rennerdo30/pair-desk`, `claude plugin marketplace update agent-pair-programming`, `claude plugin install agent-pair-programming@agent-pair-programming` |
 | Codex | `integrations/codex/install.py`: a `pair-desk` MCP server and a SessionStart hook in `~/.codex/config.toml` (backed up first; nothing else in the file changes), and three skills in `~/.agents/skills/` |
 | opencode | `integrations/opencode/install.py`: a `pair-desk` MCP server in `~/.config/opencode/opencode.json(c)` (backed up first), a small plugin in `~/.config/opencode/plugins/`, and the same skills |
+| Google Antigravity | `integrations/antigravity/install.py`: a `pair-desk` MCP server in `~/.gemini/antigravity/mcp_config.json`, a marked section in the global `~/.gemini/GEMINI.md` rules (both backed up first), and the shared skills in `~/.agents/skills/` |
 
-Codex and opencode run Pair Desk by absolute path, so they need a copy that stays. Run from a git
+Codex, opencode and Antigravity run Pair Desk by absolute path, so they need a copy that stays. Run from a git
 clone, the installer uses the clone. Run through uvx, pipx or the bootstrap scripts, it first copies
 Pair Desk to a per-user app folder (`%LOCALAPPDATA%\Programs\AgentPairProgramming` on Windows,
 `~/.local/share/agent-pair-programming` elsewhere; `--app-dir` or `PAIR_DESK_APP` to change it).
 Your desk's data lives elsewhere and is never touched (see [Data](#data)).
 
 **Update:** the same command with `update` (Claude Code: `claude plugin marketplace update` and
-`claude plugin update`; Codex and opencode: a fresh copy and a re-run of their installers), then
+`claude plugin update`; Codex, opencode and Antigravity: a fresh copy and a re-run of their installers), then
 restart your agent sessions. In Codex, trust changed hooks once with `/hooks`.
 
 **Uninstall:** the same command with `uninstall`. It asks per tool, removes only what it added,
@@ -508,6 +511,54 @@ skills by description). The Codex hook is inactive until you trust it with `/hoo
 session-start context hook: the plugin injects the summary into the system prompt instead, computed
 at the session's first model request and fixed for that session (so it stays cache-friendly but does
 not refresh mid-session), and the toast shows only in the TUI, not in `opencode run`.
+
+## Google Antigravity
+
+From a clone, install or refresh the integration with:
+
+```bash
+python desk.py install antigravity --yes --no-link
+# Or use the standalone installer with explicit paths:
+python integrations/antigravity/install.py --dry-run
+```
+
+An explicit `antigravity` selection works even when the desktop app's optional CLI is
+absent. The installer adds a local stdio MCP server to
+`~/.gemini/antigravity/mcp_config.json`, the three Pair Desk skills to `~/.agents/skills/`,
+and a marked section to `~/.gemini/GEMINI.md`. It preserves other MCP servers and global
+rules, backs up changed config/rules, and does nothing on an unchanged second run.
+The skills share ownership with Codex and opencode; uninstalling one keeps the skills
+the others use. No network service or third-party Python package is required.
+
+Restart Antigravity and refresh the servers in its MCP settings. Ask the agent to call
+`pair-desk`'s `list_projects`, then use the `pair-desk` skill. Link the game repository
+with `python desk.py link --project mygame --path /path/to/mygame`. Antigravity may launch
+MCP outside that workspace, so the installed rules resolve the workspace's project and
+pass it explicitly to desk tools. The full MCP tool set supports issues, reports, plans,
+builds, handoffs, attachments and game commands; only the owner gives a passed verdict.
+
+Session context and new owner activity use the global rules, which instruct the agent
+to run the existing `hook session-start` and `hook user-prompt-submit` commands with
+the workspace and session ID. They are instructions followed by the agent, rather than
+native Antigravity event hooks. Idle push channels remain a Claude Code feature.
+The web desk still updates live for every client. `GEMINI.md` is a shared Gemini global
+rules file; use `--no-rules` in the standalone installer if you manage it yourself.
+
+Standalone options include `--config-dir`, `--rules-file`, `--skills-dir`, `--desk`,
+`--python`, `--no-skills`, `--no-rules`, `--force`, `--dry-run` and `--uninstall`.
+For versions using a different skill directory, select it with `--skills-dir`.
+`--force` replaces only foreign skills with the same names; existing config/rules always
+receive backups. `python desk.py uninstall antigravity --yes --no-link` removes the
+Pair Desk MCP entry and rules section while retaining other tools' shared skills and
+the desk's data.
+
+| Capability | Claude Code | Codex | opencode | Google Antigravity |
+|---|---|---|---|---|
+| Full local MCP tool set and CLI fallback | Yes | Yes | Yes | Yes |
+| Skills, plans, handoffs and owner verification | Yes | Yes | Yes | Yes |
+| Session context | Plugin hook | SessionStart hook (trust required) | Plugin | Agent follows global rules |
+| New owner activity during work | Prompt hook | Read desk through tools | Read desk through tools | Agent follows global rules |
+| Owner activity pushed while idle | Opt-in Claude channel | No native integration | No native integration | No native integration |
 
 ## CLI (for agents and scripts)
 

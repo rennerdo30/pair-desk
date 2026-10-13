@@ -1,4 +1,4 @@
-"""`pair-desk install | update | uninstall`: set Pair Desk up for Claude Code, Codex and opencode.
+"""`pair-desk install | update | uninstall`: set Pair Desk up for supported coding agents.
 
     pair-desk install                      # every tool found on PATH, asking per tool
     pair-desk install claude codex --yes   # only these, without questions
@@ -8,7 +8,7 @@ For each tool it shows exactly what it will run and asks before running it. It r
 
 - Claude Code: the official plugin commands (`claude plugin marketplace add|update`,
   `claude plugin install|update|uninstall`).
-- Codex and opencode: this repo's `integrations/<tool>/install.py`, which edits only the
+- Codex, opencode and Antigravity: this repo's `integrations/<tool>/install.py`, which edits only the
   `pair-desk` entries of the tool's config (after a timestamped backup) and writes the skills.
   Those entries name an absolute path, so they must point at a copy of Pair Desk that stays: a
   git clone is used where it is; any other source (a uvx or pipx run, a downloaded archive) is
@@ -34,7 +34,7 @@ from integrations.common import LAUNCHER, LAUNCHER_CMD, REPO_ROOT, ensure_execut
 MARKETPLACE_REPO = "rennerdo30/pair-desk"
 MARKETPLACE_NAME = "agent-pair-programming"
 PLUGIN_ID = f"agent-pair-programming@{MARKETPLACE_NAME}"
-TOOLS = ("claude", "codex", "opencode")
+TOOLS = ("claude", "codex", "opencode", "antigravity")
 ACTIONS = ("install", "update", "uninstall")
 
 # what a standalone copy of Pair Desk needs (relative to the app root)
@@ -89,7 +89,7 @@ class Step:
 @dataclass
 class Context:
     source: Path                   # where this code runs from
-    app: Path                      # where Codex and opencode will run it from
+    app: Path                      # stable source used by the MCP integrations
     marketplace: str = MARKETPLACE_REPO
     python: str | None = None      # --python for the integration installers
 
@@ -138,6 +138,8 @@ NOTES = {
     "codex": "  Codex runs a new or changed hook only after you trust it: start codex, run /hooks and trust the "
              "Pair Desk SessionStart hook.",
     "opencode": "  Restart opencode afterwards.",
+    "antigravity": "  Restart Google Antigravity and refresh its MCP servers afterwards. "
+                   "Session context and owner activity use the installed global rules.",
 }
 
 
@@ -163,6 +165,20 @@ def confirm(prompt: str, ask=_terminal_input) -> bool:
 
 def _which(name: str) -> str | None:
     return shutil.which(name)
+
+
+def tool_available(tool: str, explicit: bool = False) -> bool:
+    """Antigravity is a desktop app; its optional CLI need not be on PATH."""
+    if _which(tool):
+        return True
+    if tool != "antigravity":
+        return False
+    from integrations.antigravity.install import config_dir
+    candidates = (Path("/Applications/Antigravity.app"), Path.home() / "Applications" / "Antigravity.app",
+                  Path("/usr/share/applications/antigravity.desktop"),
+                  Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local")
+                  / "Programs" / "Antigravity" / "Antigravity.exe")
+    return explicit or config_dir().is_dir() or any(path.exists() for path in candidates)
 
 
 def run_command(argv: list[str]) -> int:
@@ -308,13 +324,15 @@ def run(args, data_dir: Path, ask=_terminal_input) -> int:
     if dry:
         print("Dry run: nothing is changed.")
     if action == "update" and not ctx.copies and is_clone(ctx.source):
-        print(f"Codex and opencode run Pair Desk from the clone {fwd(ctx.source)}: update it with `git pull` there.")
+        print(f"Codex, opencode and Antigravity run Pair Desk from the clone {fwd(ctx.source)}: "
+              "update it with `git pull` there.")
     if action != "uninstall" and ctx.copies:
-        print(f"Pair Desk runs from {fwd(ctx.source)}, which is not a git clone; Codex and opencode will use a "
+        print(f"Pair Desk runs from {fwd(ctx.source)}, which is not a git clone; Codex, opencode and Antigravity will use a "
               f"copy in {fwd(ctx.app)}.")
     for tool in tools:
-        if not _which(tool):
-            print(f"{tool} is not installed (not found on PATH); skipping it.")
+        if not tool_available(tool, explicit=tool in (args.tools or [])):
+            reason = "no desktop configuration or CLI found" if tool == "antigravity" else "not found on PATH"
+            print(f"{tool} is not installed ({reason}); skipping it.")
             continue
         steps = plan_for(tool, action, ctx)
         print(f"{tool}: these steps will run:")
@@ -380,18 +398,19 @@ def run(args, data_dir: Path, ask=_terminal_input) -> int:
 
 def add_arguments(sub, common) -> None:
     """The install, update and uninstall subcommands of desk.py."""
-    for action, text in (("install", "set Pair Desk up for Claude Code, Codex and opencode"),
-                         ("update", "update the Claude Code plugin and refresh the Codex and opencode setup"),
+    for action, text in (("install", "set Pair Desk up for Claude Code, Codex, opencode and Google Antigravity"),
+                         ("update", "update the Claude Code plugin and refresh the other agent integrations"),
                          ("uninstall", "remove what install added (the desk's data stays)")):
         s = sub.add_parser(action, help=text, parents=[common], description=text)
-        s.add_argument("tools", nargs="*", metavar="TOOL", help="claude, codex and/or opencode (default: all three)")
+        s.add_argument("tools", nargs="*", metavar="TOOL", help="claude, codex, opencode and/or antigravity "
+                       "(default: all detected tools; explicit antigravity also works without its optional CLI)")
         s.add_argument("-y", "--yes", action="store_true", help="do not ask before each tool")
         s.add_argument("--dry-run", action="store_true", help="show the plan and the config changes, change nothing")
-        s.add_argument("--app-dir", help="where Codex and opencode run Pair Desk from when this is not a git clone "
+        s.add_argument("--app-dir", help="where MCP integrations run Pair Desk from when this is not a git clone "
                                          "(default: $PAIR_DESK_APP or a per-user app folder)")
         s.add_argument("--marketplace", help=f"Claude Code marketplace source (default: {MARKETPLACE_REPO}; "
                                              "a local clone's path works too)")
-        s.add_argument("--python", help="Python command for Codex and opencode (default: per OS, see "
+        s.add_argument("--python", help="Python command for the MCP integrations (default: per OS, see "
                                         "integrations/common.py desk_command)")
         s.add_argument("--link", metavar="SLUG", help="link the current git repo to this desk project")
         s.add_argument("--no-link", action="store_true", help="do not offer to link the current git repo")

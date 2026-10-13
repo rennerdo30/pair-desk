@@ -1,9 +1,9 @@
-"""Shared pieces of the Codex and opencode installers.
+"""Shared pieces of the Codex, opencode and Antigravity installers.
 
 - Timestamped backups of config files before they change.
 - Writing a file only when its content changes (so re-running an installer is a no-op).
 - The Pair Desk skills, generated from `skills/*/SKILL.md` of this repo for tools that read the
-  cross-tool skill folder `~/.agents/skills` (Codex and opencode both do). The Claude Code
+  cross-tool skill folder `~/.agents/skills` (Codex, opencode and Antigravity). The Claude Code
   wording (plugin root, `${CLAUDE_PLUGIN_ROOT}`, `/agent-pair-programming:serve`) is rewritten to
   the absolute `desk.py` path and the installed skill names. Each installed skill folder carries
   a marker listing which installers use it, so uninstalling Codex leaves the copy opencode still
@@ -134,7 +134,7 @@ def windows_python() -> list[str]:
 
 
 def desk_command(desk: str | os.PathLike, python: str | None = None, windows: bool | None = None) -> list[str]:
-    """The argv prefix that runs `desk.py` for Codex and opencode (add "mcp" or "hook ...").
+    """The argv prefix that runs `desk.py` for MCP integrations (add "mcp" or "hook ...").
 
     - `python` given (the installers' --python): `[python, desk.py]`, exactly as asked.
     - macOS and Linux: the `bin/pair-desk` launcher next to desk.py, which picks python3 or

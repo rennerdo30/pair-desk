@@ -32,7 +32,7 @@ trade playtest checks, reports and verdicts.
 - **Before you stop:** update the handoff (`update_handoff` / `set_handoff`): state, where work
   stopped (account for `git status`), verified, next step, traps.
 
-Tools: the `pair-desk` MCP server (Codex, opencode and the Claude Code plugin all register it) and the
+Tools: the `pair-desk` MCP server (Codex, opencode, Antigravity and the Claude Code plugin register it) and the
 `pair-desk` skill. Without them, use the CLI:
 `<pair-desk> list --status failed,reported --json`, `<pair-desk> show <ID> --json`, `add ...`,
 `comment ...`, `status ...`.
