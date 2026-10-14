@@ -1,1 +1,1 @@
-"""Installers that connect Pair Desk to agent tools other than Claude Code (Codex CLI, opencode)."""
+"""Pair Desk integrations for Codex, opencode, Google Antigravity and Meta Muse Code."""

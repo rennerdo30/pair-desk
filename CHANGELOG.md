@@ -6,6 +6,17 @@ and the project uses [Semantic Versioning](https://semver.org/). The version liv
 
 ## [Unreleased]
 
+## [1.8.0] - 2026-10-14
+
+### Added
+
+- Antigravity (`agy`) and Meta Muse Code integrations for install, update and uninstall,
+  including MCP tools, skills, native session summaries and owner-activity hooks.
+
+### Fixed
+
+- Preserve literal Windows interpreter paths when generating installed skills.
+
 ## [1.7.2] - 2026-10-08
 
 ### Fixed

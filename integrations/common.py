@@ -133,7 +133,8 @@ def windows_python() -> list[str]:
     return [fwd(getattr(sys, "_base_executable", None) or sys.executable)]
 
 
-def desk_command(desk: str | os.PathLike, python: str | None = None, windows: bool | None = None) -> list[str]:
+def desk_command(desk: str | os.PathLike, python: str | None = None, windows: bool | None = None,
+                 dry_run: bool = False) -> list[str]:
     """The argv prefix that runs `desk.py` for Codex and opencode (add "mcp" or "hook ...").
 
     - `python` given (the installers' --python): `[python, desk.py]`, exactly as asked.
@@ -149,7 +150,8 @@ def desk_command(desk: str | os.PathLike, python: str | None = None, windows: bo
     if not windows:
         launcher = Path(desk).parent / LAUNCHER
         if launcher.is_file():
-            ensure_executable(launcher)
+            if not dry_run:
+                ensure_executable(launcher)
             return [launcher.as_posix()]
         return ["python3", desk]
     return [*windows_python(), desk]
@@ -196,11 +198,12 @@ def _rewrite_skill(text: str, source_name: str, desk_cmd: str) -> str:
     name = SKILL_NAMES[source_name]
     out = re.sub(r"(?m)^name:\s*\S+\s*$", f"name: {name}", text, count=1)
     # the explanations of where the plugin's bin/pair-desk lives
-    out = re.sub(r"(?s)The desk command is `pair-desk`:.*?in PowerShell\.", f"The desk command is `{desk_cmd}`.", out)
+    out = re.sub(r"(?s)The desk command is `pair-desk`:.*?in PowerShell\.",
+                 lambda _: f"The desk command is `{desk_cmd}`.", out)
     out = re.sub(r"(?s)\s*\(`pair-desk` is the plugin's `bin/pair-desk`.*?this skill\)", "", out)
     out = re.sub(r"(?s) ?`pair-desk` is the plugin's `bin/pair-desk`.*?this skill\.", "", out)
     # every CLI call: `pair-desk list ...` -> `<desk_cmd> list ...`
-    out = re.sub(rf"(?<![\w/.\-])pair-desk (?=(?:{_CLI_COMMANDS})\b)", desk_cmd.replace("\\", "\\\\") + " ", out)
+    out = re.sub(rf"(?<![\w/.\-])pair-desk (?=(?:{_CLI_COMMANDS})\b)", lambda _: desk_cmd + " ", out)
     for src, dst in SKILL_NAMES.items():
         out = out.replace(f"`/agent-pair-programming:{src}`", f"the `{dst}` skill")
         out = out.replace(f"/agent-pair-programming:{src}", f"the `{dst}` skill")

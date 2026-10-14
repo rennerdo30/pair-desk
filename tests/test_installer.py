@@ -228,6 +228,41 @@ class LinkTest(InstallerCase):
         self.assertEqual(resolve_project(self.data, repo), "mygame")
 
 
+class NativeToolsTest(InstallerCase):
+    def test_both_tools_share_the_app_and_remove_only_their_own_setup(self):
+        binaries = ("agy", "muse")
+        code, out = self.run_desk("install", "antigravity", "muse", "--yes", "--app-dir", str(self.app),
+                                  tools=binaries)
+        self.assertEqual(code, 0, out)
+        plugin = self.home / ".gemini" / "config" / "plugins" / "pair-desk"
+        config = self.home / ".config" / "muse" / "settings.json"
+        self.assertTrue((plugin / "plugin.json").is_file())
+        self.assertIn("pair-desk", json.loads(config.read_text())["mcp_servers"])
+        marker = json.loads((self.app / installer.APP_MARKER).read_text())
+        self.assertEqual(marker["used_by"], ["antigravity", "muse"])
+        code, out = self.run_desk("update", "antigravity", "muse", "--yes", "--app-dir", str(self.app),
+                                  tools=binaries)
+        self.assertEqual(code, 0, out)
+        self.assertIn("Nothing to change", out)
+        code, out = self.run_desk("uninstall", "antigravity", "--yes", "--app-dir", str(self.app), tools=binaries)
+        self.assertEqual(code, 0, out)
+        self.assertFalse((plugin / "plugin.json").exists())
+        self.assertTrue((self.app / "desk.py").exists())
+        self.assertIn("still used by muse", out)
+        code, out = self.run_desk("uninstall", "muse", "--yes", "--app-dir", str(self.app), tools=binaries)
+        self.assertEqual(code, 0, out)
+        self.assertFalse(self.app.exists())
+        self.assertNotIn("pair-desk", json.loads(config.read_text()).get("mcp_servers", {}))
+        self.assertFalse((self.home / ".agents" / "skills" / "pair-desk").exists())
+        self.assertEqual(self.calls(), [], "neither integration needs a native CLI mutation")
+
+    def test_antigravity_detection_requires_agy_not_an_ide_launcher(self):
+        code, out = self.run_desk("install", "antigravity", "--dry-run", tools=("antigravity",))
+        self.assertEqual(code, 0, out)
+        self.assertIn("agy not found on PATH", out)
+        self.assertNotIn("antigravity: these steps will run", out)
+
+
 if __name__ == "__main__":
     import unittest
     unittest.main()

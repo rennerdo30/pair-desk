@@ -15,13 +15,13 @@ build-backend = "hatchling.build"
 [project]
 name = "agent-pair-programming"
 dynamic = ["version"]
-description = "Pair Desk: a local playtest desk, backlog and handoff shared by a game owner and coding agents (Claude Code, Codex, opencode)."
+description = "Pair Desk: a local playtest desk, backlog and handoff shared by a game owner and coding agents (Claude Code, Codex, opencode, Antigravity, Muse Code)."
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 requires-python = ">=3.11"
 authors = [{ name = "rennerdo30" }]
-keywords = ["playtest", "game-dev", "qa", "mcp", "claude-code", "codex", "opencode"]
+keywords = ["playtest", "game-dev", "qa", "mcp", "claude-code", "codex", "opencode", "antigravity", "muse-code"]
 classifiers = [
   "Development Status :: 5 - Production/Stable",
   "Environment :: Web Environment",

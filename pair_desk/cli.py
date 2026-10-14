@@ -859,6 +859,25 @@ def cmd_hook(args, data_dir: Path) -> int:
     try:
         data = _hook_input()
         cwd, session_id = data.get("cwd"), data.get("session_id")
+        client = getattr(args, "client", "claude")
+        if client == "antigravity":
+            paths = data.get("workspacePaths")
+            if not isinstance(paths, list) or not paths or not isinstance(paths[0], str):
+                return 0
+            cwd, session_id = paths[0], data.get("conversationId")
+        elif client == "muse":
+            session_id = session_id or os.environ.get("MUSE_SESSION_ID")
+        if client != "claude" and session_id:
+            session_id = f"{client}:{session_id}"
+
+        def emit_context(event: str, context: str, line: str | None = None) -> None:
+            if client == "antigravity":
+                _out_json({"injectSteps": [{"systemMessage": {"systemMessage": context}}]})
+            else:
+                output = {"hookSpecificOutput": {"hookEventName": event, "additionalContext": context}}
+                if line:
+                    output["systemMessage"] = line
+                _out_json(output)
         if args.event == "session-start":
             # The web desk starts with the session (and is replaced when an older version runs), never blocking it.
             try:
@@ -871,8 +890,7 @@ def cmd_hook(args, data_dir: Path) -> int:
                 context = "\n".join([line + ". Read the handoff (get_handoff) and failed and reported items "
                                              "(list_issues) before starting; see the pair-desk skill.",
                                       *build_lines(data_dir, cwd), *handoff_lines(data_dir, cwd)])
-                _out_json({"systemMessage": line,
-                           "hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": context}})
+                emit_context("SessionStart", context, line)
                 slug = resolve_project(data_dir, cwd)
                 with Store(data_dir) as store:
                     notify.mark_seen(data_dir, slug, session_id, store.event_cursor())
@@ -889,7 +907,7 @@ def cmd_hook(args, data_dir: Path) -> int:
                     return 0
                 block = notify.prompt_context(store, slug, session_id)
             if block:
-                _out_json({"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": block}})
+                emit_context("UserPromptSubmit", block)
     except Exception:  # noqa: BLE001 - a hook must never break the session
         pass
     return 0
@@ -1120,6 +1138,8 @@ def build_parser() -> argparse.ArgumentParser:
     add("mcp", "run the stdio MCP server (used by the Claude Code plugin)")
     s = add("hook", "plugin hook entry point")
     s.add_argument("event", choices=["session-start", "user-prompt-submit"])
+    s.add_argument("--client", choices=["claude", "antigravity", "muse"], default="claude",
+                   help="native hook input/output format (default: Claude Code, also used by Codex)")
     s = add("outbox", "replay desk writes queued where the desk was read-only (a sandboxed agent job, PD-4)")
     s.add_argument("action", choices=["show", "replay"])
     s.add_argument("path", help="the outbox file (.cache/pair-desk-outbox.jsonl in the job's worktree)")

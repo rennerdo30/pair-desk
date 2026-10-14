@@ -2,12 +2,12 @@
 #
 #   irm https://raw.githubusercontent.com/rennerdo30/pair-desk/main/install.ps1 | iex
 #   & ([scriptblock]::Create((irm https://raw.githubusercontent.com/rennerdo30/pair-desk/main/install.ps1))) update
-#       (arguments: install, update or uninstall, then claude codex opencode, --dry-run)
+#       (arguments: install, update or uninstall, then claude codex opencode antigravity muse, --dry-run)
 #
 # It needs Python 3.11+. It downloads Pair Desk (the main branch, or $env:PAIR_DESK_REF; or the
 # .zip named by $env:PAIR_DESK_ARCHIVE) into a
 # temporary folder and runs `desk.py install` from there, which shows exactly what it will do for
-# Claude Code, Codex and opencode and asks before each one. Codex and opencode get a copy in
+# supported agent tools and asks before each one. Non-Claude integrations get a copy in
 # %LOCALAPPDATA%\Programs\AgentPairProgramming (or $env:PAIR_DESK_APP). The download is deleted
 # afterwards. It never answers the questions for you.
 

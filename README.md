@@ -1,7 +1,7 @@
 # Pair Desk
 
 **A local playtest desk, backlog and handoff that a game developer shares with their coding agents
-(Claude Code, Codex, opencode).**
+(Claude Code, Codex, opencode, Google Antigravity, Meta Muse Code).**
 
 You play the game; your agents write the code. Pair Desk is the table between you:
 
@@ -24,7 +24,7 @@ any particular engine: locations are your game's own console commands.
 
 ## Install
 
-One command sets it up for every agent tool you have (Claude Code, Codex, opencode):
+One command sets it up for every installed agent tool:
 
 ```bash
 uvx --from git+https://github.com/rennerdo30/pair-desk pair-desk install
@@ -41,7 +41,8 @@ curl -fsSL https://raw.githubusercontent.com/rennerdo30/pair-desk/main/install.s
 irm https://raw.githubusercontent.com/rennerdo30/pair-desk/main/install.ps1 | iex             # Windows
 ```
 
-You need **Python 3.11 or newer**. The installer finds which of `claude`, `codex` and `opencode`
+You need **Python 3.11 or newer**. The installer finds which of `claude`, `codex`, `opencode`, `agy`
+and `muse`
 are on your PATH. For each one it shows the exact steps it will run and asks before running them
 (`--yes` skips the questions, `--dry-run` only shows them; name tools to limit it, e.g.
 `install claude codex`). Then it offers to link the git repo you are in to a desk project, and
@@ -54,15 +55,17 @@ What it runs and touches:
 | Claude Code | only the official plugin commands: `claude plugin marketplace add rennerdo30/pair-desk`, `claude plugin marketplace update agent-pair-programming`, `claude plugin install agent-pair-programming@agent-pair-programming` |
 | Codex | `integrations/codex/install.py`: a `pair-desk` MCP server and a SessionStart hook in `~/.codex/config.toml` (backed up first; nothing else in the file changes), and three skills in `~/.agents/skills/` |
 | opencode | `integrations/opencode/install.py`: a `pair-desk` MCP server in `~/.config/opencode/opencode.json(c)` (backed up first), a small plugin in `~/.config/opencode/plugins/`, and the same skills |
+| Google Antigravity (`antigravity`, CLI `agy`) | `integrations/antigravity/install.py`: an owned native plugin in `~/.gemini/config/plugins/pair-desk/` with MCP, session and model-invocation hooks, and three plugin skills |
+| Meta Muse Code (`muse`) | `integrations/muse/install.py`: MCP and session/prompt hooks in `~/.config/muse/settings.json` (backed up first), and shared skills in `~/.agents/skills/` |
 
-Codex and opencode run Pair Desk by absolute path, so they need a copy that stays. Run from a git
+The agent integrations run Pair Desk by absolute path, so they need a copy that stays. Run from a git
 clone, the installer uses the clone. Run through uvx, pipx or the bootstrap scripts, it first copies
 Pair Desk to a per-user app folder (`%LOCALAPPDATA%\Programs\AgentPairProgramming` on Windows,
 `~/.local/share/agent-pair-programming` elsewhere; `--app-dir` or `PAIR_DESK_APP` to change it).
 Your desk's data lives elsewhere and is never touched (see [Data](#data)).
 
 **Update:** the same command with `update` (Claude Code: `claude plugin marketplace update` and
-`claude plugin update`; Codex and opencode: a fresh copy and a re-run of their installers), then
+`claude plugin update`; other tools: a fresh copy and a re-run of their installers), then
 restart your agent sessions. In Codex, trust changed hooks once with `/hooks`.
 
 **Uninstall:** the same command with `uninstall`. It asks per tool, removes only what it added,
@@ -83,6 +86,8 @@ loads it for one session.
 
 Codex and opencode, from a clone: `python integrations/codex/install.py` and
 `python integrations/opencode/install.py` (details in [Codex and opencode](#codex-and-opencode)).
+For Antigravity and Muse Code, run `python integrations/antigravity/install.py` and
+`python integrations/muse/install.py` (details below).
 
 ## Quick start
 
@@ -445,6 +450,53 @@ or keep the link outside the repo: `python desk.py link --project mygame --path 
 (writes `projects.json` in the data folder). The marker file wins when both exist; subfolders of a
 linked path match too.
 
+## Antigravity and Muse Code
+
+```bash
+python desk.py install antigravity muse --dry-run
+python desk.py install antigravity muse --yes
+python desk.py update antigravity muse --yes
+python desk.py uninstall antigravity muse --yes
+```
+
+**Antigravity:** detection looks for `agy`, not the IDE launcher. Its native plugin contains
+`plugin.json`, `mcp_config.json`, `hooks.json`, and the three Pair Desk skills. `SessionStart`
+injects the linked project's summary and handoff; `PreInvocation` delivers new owner activity
+before the next model call. The hook translates native `workspacePaths`/`conversationId` input
+to Pair Desk's context lookup and returns `injectSteps`. It uses the first workspace path.
+Restart agy and inspect `agy plugin list`, `/mcp` and `/hooks`; approve tool calls through your
+existing policy. The installer adds no permission grants.
+
+**Muse Code:** the installer merges `mcp_servers.pair-desk`, `hooks.SessionStart`, and
+`hooks.UserPromptSubmit` into `$XDG_CONFIG_HOME/muse/settings.json` (default
+`~/.config/muse/settings.json`). A new file includes `schema_version: 1`. An existing `mcpServers`
+map is also supported; having both spellings is rejected before any write. The server is
+`optional`, so an unavailable desk does not prevent Muse from starting, and writes are attributed
+to `muse`. The hooks deliver the summary/handoff at session start and owner activity on the next
+prompt. Shared skills use the existing per-tool ownership markers, so uninstalling Muse keeps
+skills still used by Codex or opencode. Restart Muse, inspect `/mcp` and `muse skills list`, then
+ask it to call `list_projects`. User hooks execute from your settings without a separate trust
+step; MCP calls keep your existing approval policy.
+
+Both installers support `--dry-run`, timestamped config backups, and idempotent updates. Native
+hook commands quote arguments literally, including Windows paths with spaces. Foreign plugin
+folders and same-named MCP entries are refused; unrelated settings, servers and hook groups are
+preserved. JSONC comments are retained in backups when a Muse settings rewrite drops them.
+Antigravity uninstall removes the active manifest, MCP and hooks, and leaves inert metadata
+backups and an ownership marker so it can be reinstalled. Neither integration wakes an idle
+agent: owner activity is delivered when the relevant hook next runs.
+
+Direct installers also accept `--desk` and `--python`; Antigravity accepts `--plugin-dir`, and
+Muse accepts `--config-dir`, `--skills-dir` and `--no-skills` for isolated setups.
+
+Validated on Windows with Antigravity CLI 1.3.5 (`agy plugin validate`) and Muse Code 1.4.7
+(native skill validation and required-MCP startup using the offline echo provider), on
+2026-10-14. Unit tests cover hook context and owner-event delivery; authenticated model sessions
+and native macOS/Linux runs have not been checked. The formats follow the official
+[Antigravity plugins](https://antigravity.google/docs/plugins),
+[Antigravity hooks](https://antigravity.google/docs/hooks), and
+[Muse extension documentation](https://dev.meta.ai/docs/muse-code/extending).
+
 ## Codex and opencode
 
 Two installers under `integrations/` give Codex CLI and opencode the same MCP server, skills and
@@ -546,7 +598,7 @@ python desk.py suggest-groups [--project mygame] [--json]
 python desk.py handoff [show] [--version N] | handoff set --file HANDOFF.md [--note "..."]
 python desk.py handoff section --section "Next step" --text "..." | handoff history | handoff diff --version 3 [--to 5]
 python desk.py export --project mygame [--out file.json]
-python desk.py install|update|uninstall [claude codex opencode] [--yes] [--dry-run] [--link SLUG]   # see Install
+python desk.py install|update|uninstall [claude codex opencode antigravity muse] [--yes] [--dry-run] [--link SLUG]   # see Install
 ```
 
 `add` with `--kind check` defaults to status `to_check`. Author defaults to `$PAIR_DESK_AUTHOR` or `agent`.

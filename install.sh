@@ -2,12 +2,12 @@
 # Pair Desk installer for macOS and Linux (and Git Bash on Windows).
 #
 #   curl -fsSL https://raw.githubusercontent.com/rennerdo30/pair-desk/main/install.sh | sh
-#   curl -fsSL .../install.sh | sh -s -- update            # or: uninstall, --dry-run, claude codex opencode
+#   curl -fsSL .../install.sh | sh -s -- update            # or: uninstall, --dry-run, claude codex opencode antigravity muse
 #
 # It needs Python 3.11+ and curl or wget. It downloads Pair Desk (the main branch, or
 # $PAIR_DESK_REF; or the .tar.gz named by $PAIR_DESK_ARCHIVE) into a temporary folder and runs `desk.py install` from there, which shows
-# exactly what it will do for Claude Code, Codex and opencode and asks before each one. Codex and
-# opencode get a copy in ~/.local/share/agent-pair-programming (or $PAIR_DESK_APP). The download
+# exactly what it will do for supported agent tools and asks before each one. Non-Claude
+# integrations get a copy in ~/.local/share/agent-pair-programming (or $PAIR_DESK_APP). The download
 # is deleted afterwards. It never answers the questions for you.
 
 main() {
