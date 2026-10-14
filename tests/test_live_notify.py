@@ -12,6 +12,7 @@ import sys
 import threading
 import time
 import unittest
+import unittest.mock
 
 from helpers import ROOT, StoreCase, TempDirCase
 from test_api import ApiCase
@@ -243,8 +244,7 @@ class ChannelTests(TempDirCase):
 class HookTests(StoreCase):
     def hook(self, event, session="s1", env=None, client=None):
         payload = {"cwd": str(self.repo), "session_id": session, "prompt": "go"}
-        # The suite itself may run inside an agent-bridge job; hooks under test start as top-level sessions.
-        base = {k: v for k, v in os.environ.items() if k not in notify.BRIDGE_JOB_ENV}
+        base = dict(os.environ)  # helpers clears the agent-bridge job variables
         out = subprocess.run([sys.executable, DESK, "--data", str(self.tmp), "hook", event,
                               *(["--client", client] if client else [])],
                              input=json.dumps(payload).encode(), capture_output=True, timeout=30,
@@ -341,6 +341,24 @@ class HookTests(StoreCase):
         out = subprocess.run([sys.executable, DESK, "--data", str(self.tmp), "hook", "user-prompt-submit"],
                              input=b'{"cwd": "C:/nowhere", "session_id": "x"}', capture_output=True, timeout=20)
         self.assertEqual((out.returncode, out.stdout), (0, b""))
+
+
+class JobAndLeadMcpTests(StoreCase):
+    def test_job_instructions_and_channel_lead(self):
+        from pair_desk.mcp import JOB_INSTRUCTIONS, McpServer
+        server = McpServer(self.tmp)
+        init = {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}
+        self.assertIn("Read the handoff", server.handle(init)["result"]["instructions"])
+        with unittest.mock.patch.dict(os.environ, {"AGENT_BRIDGE_JOB_ID": "codex-job-1"}):
+            self.assertEqual(server.handle(init)["result"]["instructions"], JOB_INSTRUCTIONS)
+        self.assertTrue(server._channel_leads("mygame"))
+        self.store.update_project("mygame", {"lead": "codex"})
+        self.assertFalse(server._channel_leads("mygame"))
+        self.store.update_project("mygame", {"lead": "claude"})
+        self.assertTrue(server._channel_leads("mygame"))
+        self.assertFalse(server._channel_leads("deleted-project"))
+        with self.assertRaises(Exception):
+            self.store.update_project("mygame", {"lead": "opencode"})
 
 
 class NotifyUnitTests(unittest.TestCase):

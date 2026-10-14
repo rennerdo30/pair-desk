@@ -10,12 +10,15 @@ and the project uses [Semantic Versioning](https://semver.org/). The version liv
 
 - Agent-bridge subagents no longer react to the owner. Hooks in a delegated job (`AGENT_BRIDGE_JOB_ID`
   or `AGENT_BRIDGE_PARENT_JOB` set) get a one-line note to work from the brief instead of the desk
-  triage prompt and handoff, and no owner activity; the Claude channel push stays off in jobs.
-- A project can name a lead agent client (`project-set --lead codex`, or `lead` in the project
-  settings API). Only that client's top-level sessions then get owner activity; the others are told
-  at session start which client handles it. With no lead, every session is notified as before.
-- The Codex and opencode hooks pass `--client codex` / `--client opencode`; run `pair-desk update`
-  so existing installs match a `codex` or `opencode` lead.
+  triage prompt and handoff, and no owner activity; the Claude channel push stays off in jobs, and the
+  MCP instructions and opencode rules point jobs at their brief.
+- A project can name a lead agent client (`project-set --lead claude|codex|antigravity|muse`, or `lead`
+  in the project settings API). Only that client's top-level sessions then get owner activity (prompt
+  hook and channel, rechecked while the channel runs); the others are told at session start which
+  client handles it. With no lead, every session is notified as before.
+- Codex gets the owner's activity on every prompt: the installer adds a `UserPromptSubmit` hook, and
+  both Codex hooks (and opencode's) pass `--client`. Run `pair-desk update` and trust the hooks in
+  Codex `/hooks`.
 
 ## [1.8.1] - 2026-10-14
 

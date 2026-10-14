@@ -29,6 +29,11 @@ from .store import (HANDOFF_SECTIONS, KINDS, PLAN_STATES, PRIORITIES, SIZES, STA
                     Store, handover_problem, location_commands, merge_location)
 
 CHANNEL_NOTIFICATION = "notifications/claude/channel"
+# MCP instructions inside an agent-bridge delegated job: the session that delegated it handles the owner.
+JOB_INSTRUCTIONS = ("Pair Desk is the owner's playtest tracker, backlog and handoff. You are a delegated agent-bridge "
+                    "job: work from your brief and use the desk only for the issues it names (plans, progress, "
+                    "evidence and comments there). Leave triage, new reports and owner verdicts to the session "
+                    "that delegated you. Never mark anything passed.")
 # Without a desk server to stream from, the channel checks the database this often (seconds).
 CHANNEL_POLL = 3.0
 DESK_PORT_ENV = "PAIR_DESK_PORT"
@@ -567,7 +572,8 @@ class McpServer:
                     # `claude/channel`: this server can push owner activity into the session.
                     "capabilities": {"tools": {"listChanged": False}, "experimental": {"claude/channel": {}}},
                     "serverInfo": {"name": "pair-desk", "title": APP_NAME, "version": VERSION},
-                    "instructions": "Pair Desk is the owner's playtest tracker, backlog and handoff. Read the "
+                    "instructions": JOB_INSTRUCTIONS if notify.delegated_job() else
+                                    "Pair Desk is the owner's playtest tracker, backlog and handoff. Read the "
                                     "handoff and failed and reported items at session start. Write a plan (set_plan) "
                                     "before code and post progress live (progress, update_step) as you work. File "
                                     "auto_check for screenshots, logs and tests you can verify yourself; record evidence, then move to to_check only for owner review (or close per project rules). Use update_issue to clarify reports. File to_check items with location commands after a change (one place per command); comment with what you "
@@ -686,13 +692,20 @@ class McpServer:
             self._channel = threading.Thread(target=self._channel_loop, name="pair-desk-channel", daemon=True)
             self._channel.start()
 
+    def _channel_leads(self, slug: str) -> bool:
+        """Whether this Claude session may push the project's owner activity (no lead, or Claude leads)."""
+        try:
+            return notify.receives_activity(self.store.get_project(slug).get("lead"), "claude")
+        except DeskError:
+            return False
+
     def _channel_loop(self) -> None:
         """Push owner activity for the linked project as channel messages while the session runs."""
         try:
             # A delegated job never gets the push, even under a channel-enabled Claude ancestor.
             enabled, claude_pid = (False, None) if notify.delegated_job() else notify.detect_channel()
             slug = resolve_project(self.data_dir, self.cwd) if enabled else None
-            if slug and not notify.receives_activity(self.store.get_project(slug).get("lead"), "claude"):
+            if slug and not self._channel_leads(slug):
                 enabled = False
             self.channel_state = {"enabled": bool(enabled and slug), "project": slug, "claude_pid": claude_pid}
             if not enabled or not slug:
@@ -707,6 +720,8 @@ class McpServer:
                     break
                 res = store.owner_events(slug, cursor)
                 cursor = res["cursor"]
+                if not self._channel_leads(slug):  # the lead moved to another client: stay quiet
+                    continue
                 for e in reversed(res["events"]):
                     self._send({"jsonrpc": "2.0", "method": CHANNEL_NOTIFICATION,
                                 "params": notify.channel_message(e, slug)})

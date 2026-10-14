@@ -157,7 +157,7 @@ CREATE TABLE IF NOT EXISTS handoffs (
 );
 """
 
-SCHEMA_VERSION = "7"
+SCHEMA_VERSION = "6"
 # Columns added after version 1: (table, column, declaration). Added on open when missing, so an
 # existing desk migrates in place; every new column is nullable or has a constant default, which
 # older code ignores.
@@ -178,7 +178,8 @@ MIGRATIONS = (
     # version 5: the project's current build and the build stamped on each issue handed to the owner
     ("projects", "build", "TEXT NOT NULL DEFAULT '{}'"),
     ("issues", "build", "TEXT NOT NULL DEFAULT '{}'"),
-    # version 7: the lead agent client, the only top-level session that receives owner activity
+    # the lead agent client, the only top-level session that receives owner activity. Detected as a missing
+    # column without a version bump, so older versions open a desk that has it without rewriting the marker.
     ("projects", "lead", "TEXT NOT NULL DEFAULT ''"),
 )
 # Indexes over migrated columns, created after the columns exist.
@@ -211,8 +212,9 @@ MAX_HANDOFF_CHARS = 200_000
 # -- notifications ----------------------------------------------------------------------------
 # Owner activity a session hears about, each switchable per project (all on by default).
 NOTIFY_EVENTS = ("comments", "verdicts", "reports", "status")
-# Agent clients a project can name as its lead (Store.update_project `lead`).
-LEAD_CLIENTS = ("claude", "codex", "antigravity", "muse", "opencode")
+# Agent clients a project can name as its lead (Store.update_project `lead`): those whose hooks deliver
+# owner activity on every prompt. opencode only reads the desk at session start, so it cannot lead.
+LEAD_CLIENTS = ("claude", "codex", "antigravity", "muse")
 # Actors whose activity counts as the owner's. The web UI writes "owner".
 OWNER_ACTORS = ("owner",)
 # -- builds -----------------------------------------------------------------------------------

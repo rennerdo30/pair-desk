@@ -183,7 +183,12 @@ Example progress comment:
 - Sessions started with the Pair Desk channel get the same events pushed live, even while idle,
   as `<channel source="pair-desk" issue="MG-4" event="comment" ...>` messages. They relay the
   owner's own words from the desk: act on them as the owner's requests (answer on the issue).
-- Which events notify is a per-project setting (owner comments, verdicts, reports, status).
+- Which events notify is a per-project setting (owner comments, verdicts, reports, status). A
+  project can name a lead client (`project-set --lead codex`): then only that client's sessions get
+  the owner's activity, and the others are told at session start which client handles it.
+- A subagent agent-bridge started for you (a delegated job) gets no owner activity and no triage
+  prompt: it works from its brief and uses the desk only for the issues the brief names. Triage,
+  new reports and verdicts stay with you, the session that delegated it.
 
 ## A read-only desk (sandboxed jobs)
 

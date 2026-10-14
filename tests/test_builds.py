@@ -129,7 +129,7 @@ class BuildMigrationTests(TempDirCase):
         conn.commit()
         conn.close()
         with Store(self.tmp) as s:
-            self.assertEqual(s._read("SELECT value FROM meta WHERE key='schema'")[0]["value"], "7")
+            self.assertEqual(s._read("SELECT value FROM meta WHERE key='schema'")[0]["value"], "6")
             self.assertEqual((s.get_project("mygame")["builds_enabled"], s.get_issue("MG-1")["build"]), (False, None))
             self.assertEqual(s.set_build("mygame", "0.1")["stamped"], ["MG-1"])
 

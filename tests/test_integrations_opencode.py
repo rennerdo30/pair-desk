@@ -191,6 +191,16 @@ class PluginUnderNodeTest(TempDirCase):
         self.assertIn("Never mark anything passed", out["sys1"][1])
         self.assertIn("1 new report", out["sys1"][1])
         self.assertEqual(out["sys2"], ["base"], "a session in an unlinked folder gets nothing")
+        self.assertIn("At session start read failed checks", out["sys1"][1])
+        # an agent-bridge delegated job keeps to its brief
+        run = subprocess.run([NODE, str(probe), str(opencode.PLUGIN_SRC), str(linked), str(unlinked)],
+                             capture_output=True, text=True, encoding="utf-8", timeout=60,
+                             env=dict(env, AGENT_BRIDGE_JOB_ID="opencode-job-1"))
+        self.assertEqual(run.returncode, 0, run.stderr)
+        block = json.loads(run.stdout.strip().splitlines()[-1])["sys1"][1]
+        self.assertIn("You are a delegated agent-bridge job", block)
+        self.assertIn("delegated agent-bridge job (opencode-job-1)", block)
+        self.assertNotIn("At session start read failed checks", block)
 
 
 if __name__ == "__main__":

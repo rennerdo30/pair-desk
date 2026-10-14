@@ -897,7 +897,7 @@ def cmd_hook(args, data_dir: Path) -> int:
             if line and job:
                 emit_context("SessionStart", f"{line}. You are a delegated agent-bridge job ({job}): work from your "
                              "brief and use the desk only for the issues it names. Leave triage, new reports and "
-                             "owner verdicts to the session that delegated you.")
+                             "owner verdicts to the session that delegated you.", line)
             elif line:
                 slug = resolve_project(data_dir, cwd)
                 with Store(data_dir) as store:

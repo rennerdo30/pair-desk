@@ -142,7 +142,7 @@ class MigrationTests(TempDirCase):
                                        "commands": [{"command": CAPITAL}]})
             self.assertEqual(rows[2], {})
             self.assertEqual([c["command"] for c in rows[3]["commands"]], [CAPITAL, KEEP])
-            self.assertEqual(s._read("SELECT value FROM meta WHERE key='schema'")[0]["value"], "7")
+            self.assertEqual(s._read("SELECT value FROM meta WHERE key='schema'")[0]["value"], "6")
 
 
 class ApiCommandTests(ApiCase):

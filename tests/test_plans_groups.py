@@ -427,7 +427,7 @@ class MigrationTests(TempDirCase):
             s.set_handoff("mygame", "## State\n\nmigrated")
             self.assertEqual(s.create_issue("mygame", {"title": "new"})["id"], "MG-3")
         with Store(self.tmp) as s:  # opening again is a no-op
-            self.assertEqual(s._read("SELECT value FROM meta WHERE key='schema'")[0]["value"], "7")
+            self.assertEqual(s._read("SELECT value FROM meta WHERE key='schema'")[0]["value"], "6")
             self.assertEqual(s.get_handoff("mygame")["version"], 1)
         conn = sqlite3.connect(db)
         cols = {r[1] for r in conn.execute("PRAGMA table_info(issues)")}
