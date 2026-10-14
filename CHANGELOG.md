@@ -6,6 +6,11 @@ and the project uses [Semantic Versioning](https://semver.org/). The version liv
 
 ## [Unreleased]
 
+### Fixed
+
+- Large image previews now scale to the space below the toolbar, keeping the
+  bottom edge visible when the browser is resized.
+
 ## [1.8.1] - 2026-10-14
 
 ### Fixed

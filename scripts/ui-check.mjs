@@ -164,6 +164,33 @@ try {
   await evaluate(`document.querySelector(".thumb").click()`);
   check("lightbox opens", await waitFor(`!document.querySelector("#lightbox").hidden && document.querySelector("#lightbox img")`));
   await shot("03-lightbox");
+  // Large screenshots must fit beneath the toolbar, including after a viewport resize.
+  for (const [width, height] of [[1500, 950], [800, 600], [390, 844], [844, 390]]) {
+    await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false });
+    for (const [imageWidth, imageHeight] of [[900, 5000], [5000, 900], [4000, 3000], [64, 40]]) {
+      const bounds = await evaluate(`
+        const canvas = document.createElement("canvas"); canvas.width = ${imageWidth}; canvas.height = ${imageHeight};
+        const g = canvas.getContext("2d"); g.fillStyle = "#2f5d62"; g.fillRect(0, 0, canvas.width, canvas.height);
+        const image = document.querySelector("#lightbox img"); image.src = canvas.toDataURL(); await image.decode();
+        await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+        const rect = image.getBoundingClientRect();
+        const bar = document.querySelector(".lightbox-bar").getBoundingClientRect();
+        return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom,
+          width: rect.width, height: rect.height, barBottom: bar.bottom, viewportWidth: innerWidth, viewportHeight: innerHeight };
+      `);
+      check(`lightbox fits ${imageWidth}x${imageHeight} at ${width}x${height}`,
+        bounds.left >= 11 && bounds.right <= bounds.viewportWidth - 11 &&
+        bounds.top >= bounds.barBottom - 1 && bounds.bottom <= bounds.viewportHeight - 15 &&
+        bounds.width > 0 && bounds.height > 0 &&
+        Math.abs(bounds.width / bounds.height - imageWidth / imageHeight) < 0.01, bounds);
+      if (imageHeight === 5000) await shot(`lightbox-tall-${width}x${height}`);
+    }
+  }
+  await send("Emulation.clearDeviceMetricsOverride");
+  await evaluate(`document.querySelector('[data-lb="next"]').click()`);
+  check("Next restores the attachment image", await waitFor(`document.querySelector('#lightbox img')?.getAttribute('src') === ${JSON.stringify(fox.attachments[0].url)}`));
+  await evaluate(`document.querySelector('[data-lb="prev"]').click()`);
+  check("Previous keeps the attachment image", await evaluate(`return document.querySelector('#lightbox img')?.getAttribute('src') === ${JSON.stringify(fox.attachments[0].url)}`));
   await evaluate(`document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }))`);
   check("Esc closes the lightbox", await evaluate(`return document.querySelector("#lightbox").hidden`));
 
