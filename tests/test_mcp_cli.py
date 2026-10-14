@@ -1,8 +1,10 @@
 import io
 import json
 import os
+import queue
 import subprocess
 import sys
+import threading
 import unittest
 
 from helpers import ROOT, StoreCase, TempDirCase
@@ -71,6 +73,46 @@ class FramingTests(TempDirCase):
         result = [json.loads(line) for line in self.serve(raw).splitlines()]
         self.assertEqual(result[0]["error"]["code"], -32700)
         self.assertEqual(result[1]["id"], 5)
+
+    def test_long_jsonl_messages_are_not_subject_to_header_limit(self):
+        value = {"jsonrpc": "2.0", "id": 6, "method": "ping", "params": {"text": "x" * 9000}}
+        raw = json.dumps(value).encode() + b"\n"
+        self.assertEqual(json.loads(self.serve(raw))["id"], 6)
+
+    def test_header_budget_includes_blank_delimiter_and_accepts_exact_limit(self):
+        value = {"jsonrpc": "2.0", "id": 8, "method": "ping"}
+        body = json.dumps(value).encode()
+        prefix = f"Content-Length: {len(body)}\r\nX-Pad: ".encode()
+        raw = prefix + b"x" * (8192 - len(prefix) - 4) + b"\r\n\r\n" + body
+        self.assertEqual(self.replies(self.serve(raw))[0]["id"], 8)
+
+    def test_oversized_header_is_rejected_without_newline_or_eof(self):
+        for raw in (b"Content-Length: " + b"1" * 9000,
+                    b"Content-Length: 2\r\nX-Pad: " + b"x" * 9000):
+            with self.subTest(first_header=raw.startswith(b"Content-Length: 111")):
+                proc = subprocess.Popen([sys.executable, DESK, "--data", str(self.tmp), "mcp"],
+                                        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                try:
+                    result = queue.Queue()
+                    threading.Thread(target=lambda: result.put(proc.stdout.read()), daemon=True).start()
+                    try:
+                        proc.stdin.write(raw)
+                        proc.stdin.flush()
+                    except BrokenPipeError:
+                        pass
+                    # Leave stdin open: a rejected frame must not wait for EOF or a newline.
+                    messages = self.replies(result.get(timeout=5))
+                    self.assertEqual(messages[0]["error"]["code"], -32700)
+                    self.assertEqual(proc.wait(timeout=5), 0)
+                finally:
+                    if proc.poll() is None:
+                        proc.terminate()
+                        proc.wait(timeout=5)
+                    for pipe in (proc.stdin, proc.stdout, proc.stderr):
+                        try:
+                            pipe.close()
+                        except BrokenPipeError:
+                            pass
 
 
 def rpc(proc, msg):

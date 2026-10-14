@@ -639,20 +639,24 @@ class McpServer:
 
     def _read_message(self, stdin) -> bytes | None:
         while True:
-            raw = stdin.readline()
+            raw = stdin.readline(8193)
             if not raw:
                 return None
             if raw.strip():
                 break
         if not raw.lower().startswith((b"content-length:", b"content-type:")):
+            if not raw.endswith(b"\n"):
+                raw += stdin.readline()
             return raw
         self._header_framing = True
         length = None
         header_bytes = 0
-        while raw.strip():
+        while True:
             header_bytes += len(raw)
             if header_bytes > 8192:
                 raise ValueError("frame headers too large")
+            if not raw.strip():
+                break
             key, sep, value = raw.partition(b":")
             if not sep:
                 raise ValueError("invalid frame header")
@@ -662,7 +666,7 @@ class McpServer:
                 length = int(value.strip())
                 if not 0 < length <= 64 * 1024 * 1024:
                     raise ValueError("frame length out of range")
-            raw = stdin.readline()
+            raw = stdin.readline(8192 - header_bytes + 1)
             if not raw:
                 raise ValueError("truncated frame headers")
         if length is None:
