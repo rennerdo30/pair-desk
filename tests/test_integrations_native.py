@@ -95,6 +95,54 @@ class NativeInstallTest(TempDirCase):
             self.assertEqual(self.antigravity(*extra)[0], 1)
             self.assertEqual(manifest.read_text(), '{"name":"mine"}')
 
+    def test_antigravity_foreign_server_is_rejected_before_any_write(self):
+        self.antigravity()
+        path = self.plugin / "mcp_config.json"
+        value = json.loads(path.read_text())
+        value["mcpServers"]["pair-desk"] = {"command": "foreign"}
+        path.write_text(json.dumps(value))
+        before = {p: p.read_bytes() for p in self.plugin.rglob("*") if p.is_file()}
+        self.assertEqual(self.antigravity()[0], 1)
+        self.assertEqual({p: p.read_bytes() for p in self.plugin.rglob("*") if p.is_file()}, before)
+
+    def test_antigravity_update_preserves_sibling_handlers_and_server_options(self):
+        self.antigravity()
+        path = self.plugin / "hooks.json"
+        value = json.loads(path.read_text())
+        custom = {"type": "command", "command": "echo custom"}
+        value["pair-desk"]["SessionStart"].append(custom)
+        path.write_text(json.dumps(value))
+        server_path = self.plugin / "mcp_config.json"
+        config = json.loads(server_path.read_text())
+        config["mcpServers"]["pair-desk"]["disabled"] = True
+        config["mcpServers"]["pair-desk"]["env"]["CUSTOM"] = "preserved"
+        server_path.write_text(json.dumps(config))
+        for _ in range(2):
+            self.assertEqual(self.antigravity()[0], 0)
+            handlers = json.loads(path.read_text())["pair-desk"]["SessionStart"]
+            self.assertEqual(len(handlers), 2)
+            self.assertIn(custom, handlers)
+        server = json.loads(server_path.read_text())["mcpServers"]["pair-desk"]
+        self.assertTrue(server["disabled"])
+        self.assertEqual(server["env"]["CUSTOM"], "preserved")
+
+    def test_muse_preserves_user_handler_appended_to_managed_group(self):
+        self.muse()
+        value = json.loads(self.config.read_text())
+        group = value["hooks"]["SessionStart"][0]
+        custom = {"type": "command", "command": "echo custom"}
+        group["hooks"].append(custom)
+        group["matcher"] = "startup"
+        self.write_config(value)
+        for _ in range(2):
+            self.assertEqual(self.muse()[0], 0)
+            groups = json.loads(self.config.read_text())["hooks"]["SessionStart"]
+            self.assertEqual(groups[0], {"matcher": "startup", "hooks": [custom]})
+            self.assertEqual(len(groups), 2)
+        self.assertEqual(self.muse("--uninstall")[0], 0)
+        self.assertEqual(json.loads(self.config.read_text())["hooks"]["SessionStart"],
+                         [{"matcher": "startup", "hooks": [custom]}])
+
     def test_dry_runs_and_absent_uninstalls_write_nothing(self):
         for fn in (self.antigravity, self.muse):
             self.assertEqual(fn("--dry-run")[0], 0)

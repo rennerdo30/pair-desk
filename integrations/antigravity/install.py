@@ -16,7 +16,7 @@ if __package__ in (None, ""):
 
 from integrations.common import (DESK_PY, MARKER, SKILL_NAMES, Report, backup, desk_command, fwd,
                                  install_skills, shell_line, uninstall_skills, update_config_file)
-from integrations.native import check_unlinked, dump, hook_command, load_object
+from integrations.native import check_unlinked, dump, hook_command, load_object, managed_handler
 
 TOOL = "antigravity"
 FILES = ("plugin.json", "mcp_config.json", "hooks.json")
@@ -91,11 +91,24 @@ def run(argv: list[str] | None = None) -> int:
             old_hooks = previous["hooks.json"].get("pair-desk", {})
             if not isinstance(old_servers, dict) or not isinstance(old_hooks, dict):
                 raise ValueError("invalid Antigravity MCP servers or Pair Desk hooks; left alone")
+            existing = old_servers.get("pair-desk")
+            if existing is not None and (not isinstance(existing, dict)
+                                        or not isinstance(existing.get("env"), dict)
+                                        or existing["env"].get("PAIR_DESK_AUTHOR") != TOOL):
+                raise ValueError("the pair-desk MCP entry was not installed by Pair Desk; left alone")
+            server = desired["mcp_config.json"]["mcpServers"]["pair-desk"]
+            if existing:
+                server = {**existing, **server, "env": {**existing["env"], **server["env"]}}
+            merged_hooks = {**old_hooks}
+            for event, handlers in desired["hooks.json"]["pair-desk"].items():
+                previous_handlers = old_hooks.get(event, [])
+                if not isinstance(previous_handlers, list):
+                    raise ValueError(f"Antigravity hooks.{event} must be an array; left alone")
+                merged_hooks[event] = [h for h in previous_handlers if not managed_handler(h, TOOL)] + handlers
             desired["plugin.json"] = {**previous["plugin.json"], **desired["plugin.json"]}
             desired["mcp_config.json"] = {**previous["mcp_config.json"], "mcpServers": {
-                **old_servers, **desired["mcp_config.json"]["mcpServers"]}}
-            desired["hooks.json"] = {**previous["hooks.json"], "pair-desk": {
-                **old_hooks, **desired["hooks.json"]["pair-desk"]}}
+                **old_servers, "pair-desk": server}}
+            desired["hooks.json"] = {**previous["hooks.json"], "pair-desk": merged_hooks}
             for name, data in desired.items():
                 update_config_file(folder / name, dump(data), report, f"Antigravity {name}")
             update_config_file(folder / MARKER, dump({"tool": TOOL, "source": fwd(DESK_PY.parent)}),

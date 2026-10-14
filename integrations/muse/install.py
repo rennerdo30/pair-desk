@@ -18,7 +18,7 @@ if __package__ in (None, ""):
 from integrations.common import (DESK_PY, MARKER, SKILL_NAMES, Report, agents_skills_dir,
                                  desk_command, install_skills, shell_line,
                                  uninstall_skills, update_config_file)
-from integrations.native import check_unlinked, dump, hook_command, load_object, managed_hook
+from integrations.native import check_unlinked, dump, hook_command, load_object, remove_managed_groups
 
 TOOL = "muse"
 EVENTS = {"SessionStart": "session-start", "UserPromptSubmit": "user-prompt-submit"}
@@ -63,7 +63,7 @@ def merged_settings(data: dict, prefix: list[str] | None, uninstall: bool = Fals
         data.setdefault("schema_version", 1)
         servers["pair-desk"] = mcp_entry(prefix)
     for event, action in EVENTS.items():
-        groups = [g for g in hooks.get(event, []) if not managed_hook(g, TOOL)]
+        groups = remove_managed_groups(hooks.get(event, []), TOOL)
         if not uninstall:
             groups.append({"hooks": [{"type": "command", "command": hook_command(prefix, action, TOOL),
                                       "timeout": 10}]})

@@ -56,14 +56,11 @@ def hook_command(prefix: list[str], event: str, client: str, windows: bool | Non
     return "powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand " + encoded
 
 
-def managed_hook(group: object, client: str) -> bool:
-    """Only remove complete groups written by us; keep user hooks even in the same event."""
-    if not isinstance(group, dict) or set(group) != {"hooks"}:
+def managed_handler(handler: object, client: str) -> bool:
+    """Recognize our shell command, independently of user additions to its matcher group."""
+    if not isinstance(handler, dict):
         return False
-    hooks = group["hooks"]
-    if not isinstance(hooks, list) or len(hooks) != 1 or not isinstance(hooks[0], dict):
-        return False
-    command = hooks[0].get("command")
+    command = handler.get("command")
     if not isinstance(command, str):
         return False
     if command.startswith("powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand "):
@@ -73,3 +70,25 @@ def managed_hook(group: object, client: str) -> bool:
             return False
     marker = f"# pair-desk:{client}:hook"
     return command.startswith(marker + "\n") or command.endswith(" " + marker)
+
+
+def managed_hook(group: object, client: str) -> bool:
+    if not isinstance(group, dict):
+        return False
+    hooks = group.get("hooks")
+    return isinstance(hooks, list) and len(hooks) == 1 and managed_handler(hooks[0], client)
+
+
+def remove_managed_groups(groups: list, client: str) -> list:
+    """Remove only our handlers, keeping sibling user handlers and matcher settings."""
+    kept = []
+    for group in groups:
+        if not isinstance(group, dict) or not isinstance(group.get("hooks"), list):
+            kept.append(group)
+            continue
+        handlers = [h for h in group["hooks"] if not managed_handler(h, client)]
+        if handlers == group["hooks"]:
+            kept.append(group)
+        elif handlers:
+            kept.append({**group, "hooks": handlers})
+    return kept
