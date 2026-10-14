@@ -8,7 +8,7 @@ import os
 import subprocess
 import sys
 import unittest
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from unittest.mock import patch
 
 from helpers import ROOT, TempDirCase
@@ -271,6 +271,19 @@ class NativeHookTest(TempDirCase):
 
 
 class NativeDiscoveryTest(unittest.TestCase):
+    def test_only_standard_macos_system_alias_targets_are_allowed(self):
+        with patch.object(native.sys, "platform", "darwin"):
+            for name in ("var", "tmp", "etc"):
+                for target in (f"/private/{name}", f"private/{name}"):
+                    with patch.object(native.os, "readlink", return_value=target):
+                        self.assertTrue(native.darwin_system_alias(PurePosixPath("/" + name)))
+                with patch.object(native.os, "readlink", return_value="/custom"):
+                    self.assertFalse(native.darwin_system_alias(PurePosixPath("/" + name)))
+            with patch.object(native.os, "readlink", return_value="/private/var"):
+                self.assertFalse(native.darwin_system_alias(PurePosixPath("/user-link")))
+        with patch.object(native.sys, "platform", "linux"):
+            self.assertFalse(native.darwin_system_alias(PurePosixPath("/var")))
+
     def test_dry_run_does_not_chmod_the_posix_launcher(self):
         with patch.object(common, "ensure_executable") as chmod:
             common.desk_command(common.DESK_PY, windows=False, dry_run=True)

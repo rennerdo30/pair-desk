@@ -7,9 +7,18 @@ import json
 import os
 import shlex
 import stat
+import sys
 from pathlib import Path
 
 from integrations.common import read_text, strip_jsonc
+
+
+def darwin_system_alias(path: Path) -> bool:
+    """macOS exposes these OS directories through standard aliases into /private."""
+    if sys.platform != "darwin" or str(path) not in ("/var", "/tmp", "/etc"):
+        return False
+    target = os.readlink(path)
+    return target in (f"/private/{path.name}", f"private/{path.name}")
 
 
 def check_unlinked(path: Path) -> None:
@@ -19,6 +28,8 @@ def check_unlinked(path: Path) -> None:
             attributes = getattr(part.lstat(), "st_file_attributes", 0)
         except FileNotFoundError:
             attributes = 0
+        if part.is_symlink() and darwin_system_alias(part):
+            continue
         if part.is_symlink() or attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0):
             raise ValueError(f"linked installation paths are not supported: {part}")
 
