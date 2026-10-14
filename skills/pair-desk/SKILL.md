@@ -21,6 +21,11 @@ The project is picked from the repo automatically when it is linked (a `.pair-de
 `{"project": "<slug>"}` in the repo root, or `pair-desk link --project <slug>`). Otherwise pass
 `project`. `list_projects` shows what exists and what this repo is linked to.
 
+**Delegated jobs:** if agent-bridge started you as a subagent (your session-start line says
+"delegated agent-bridge job"), skip the session-start triage below. Work from your brief, use the
+desk only for the issues it names (plan, progress, evidence, comments), and leave the handoff, new
+reports and owner verdicts to the session that delegated you.
+
 ## Agent verification and issue updates
 
 Use **auto_check** for everything you can verify yourself: screenshots, logs, tests, builds and reproduction. List these at session start and run the checks; never hand automatic work to the owner. Record evidence with comment/progress. If manual review remains, explicitly set_status to to_check after the handover requirements below are met. Otherwise keep auto_check until you can close with evidence under the project's rules. No status automatically means checks passed, and only the owner sets passed.
