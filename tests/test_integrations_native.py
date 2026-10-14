@@ -162,6 +162,7 @@ class NativeInstallTest(TempDirCase):
         value = json.loads(self.config.read_text())
         self.assertEqual(value["model"], "user-model")
         self.assertEqual(value["mcp_servers"]["other"], original["mcp_servers"]["other"])
+        self.assertEqual(value["mcp_servers"]["pair-desk"]["framing"], "jsonl")
         self.assertEqual(value["hooks"]["Stop"], original["hooks"]["Stop"])
         self.assertEqual(len(value["hooks"]["SessionStart"]), 2)
         self.assertTrue(native.managed_hook(value["hooks"]["SessionStart"][1], "muse"))

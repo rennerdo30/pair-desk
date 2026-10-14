@@ -472,7 +472,8 @@ existing policy. The installer adds no permission grants.
 `~/.config/muse/settings.json`). A new file includes `schema_version: 1`. An existing `mcpServers`
 map is also supported; having both spellings is rejected before any write. The server is
 `optional`, so an unavailable desk does not prevent Muse from starting, and writes are attributed
-to `muse`. The hooks deliver the summary/handoff at session start and owner activity on the next
+to `muse`. The entry explicitly sets `framing: jsonl` for the desk's newline-delimited MCP
+protocol. The hooks deliver the summary/handoff at session start and owner activity on the next
 prompt. Shared skills use the existing per-tool ownership markers, so uninstalling Muse keeps
 skills still used by Codex or opencode. Restart Muse, inspect `/mcp` and `muse skills list`, then
 ask it to call `list_projects`. User hooks execute from your settings without a separate trust

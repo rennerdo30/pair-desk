@@ -30,7 +30,7 @@ def config_dir() -> Path:
 
 
 def mcp_entry(prefix: list[str]) -> dict:
-    return {"transport": "stdio", "command": prefix[0], "args": [*prefix[1:], "mcp"],
+    return {"transport": "stdio", "framing": "jsonl", "command": prefix[0], "args": [*prefix[1:], "mcp"],
             "env": {"PAIR_DESK_AUTHOR": TOOL}, "enabled": True, "mode": "optional"}
 
 
