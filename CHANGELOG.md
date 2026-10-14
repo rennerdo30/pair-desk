@@ -6,11 +6,6 @@ and the project uses [Semantic Versioning](https://semver.org/). The version liv
 
 ## [Unreleased]
 
-### Fixed
-
-- Large image previews now scale to the space below the toolbar, keeping the
-  bottom edge visible when the browser is resized.
-
 ## [1.8.1] - 2026-10-14
 
 ### Fixed
@@ -18,6 +13,8 @@ and the project uses [Semantic Versioning](https://semver.org/). The version liv
 - Muse TUI MCP startup: use framing accepted by both native settings parsers, accept
   Content-Length requests alongside JSONL, and pass the data directory explicitly to
   MCP child processes whose home-directory environment has been stripped.
+- Large image previews now scale to the space below the toolbar, keeping the
+  bottom edge visible when the browser is resized.
 
 ## [1.8.0] - 2026-10-14
 
