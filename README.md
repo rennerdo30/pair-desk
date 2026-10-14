@@ -53,7 +53,7 @@ What it runs and touches:
 | tool | what `install` does |
 |---|---|
 | Claude Code | only the official plugin commands: `claude plugin marketplace add rennerdo30/pair-desk`, `claude plugin marketplace update agent-pair-programming`, `claude plugin install agent-pair-programming@agent-pair-programming` |
-| Codex | `integrations/codex/install.py`: a `pair-desk` MCP server and a SessionStart hook in `~/.codex/config.toml` (backed up first; nothing else in the file changes), and three skills in `~/.agents/skills/` |
+| Codex | `integrations/codex/install.py`: a `pair-desk` MCP server and SessionStart and UserPromptSubmit hooks in `~/.codex/config.toml` (backed up first; nothing else in the file changes), and three skills in `~/.agents/skills/` |
 | opencode | `integrations/opencode/install.py`: a `pair-desk` MCP server in `~/.config/opencode/opencode.json(c)` (backed up first), a small plugin in `~/.config/opencode/plugins/`, and the same skills |
 | Google Antigravity (`antigravity`, CLI `agy`) | `integrations/antigravity/install.py`: an owned native plugin in `~/.gemini/config/plugins/pair-desk/` with MCP, session and model-invocation hooks, and three plugin skills |
 | Meta Muse Code (`muse`) | `integrations/muse/install.py`: MCP and session/prompt hooks in `~/.config/muse/settings.json` (backed up first), and shared skills in `~/.agents/skills/` |
@@ -331,7 +331,7 @@ browser `Origin` other than `http://127.0.0.1[:port]`, `http://localhost[:port]`
 | `GET /api/projects` | `{projects: [{slug, name, prefix, issue_count, counts: {status: n}}]}` |
 | `POST /api/projects` | `{slug, name, prefix}` → the project (201) |
 | `GET /api/projects/{slug}` | project plus `counts`, `areas`, `tags`, `last_change` |
-| `PATCH /api/projects/{slug}` | `{name?, default_seed?, notify?}`: `default_seed` (integer, `null` clears) is the world seed that new agent issues and checks without a seed inherit; game reports keep what they send. `notify` is `{comments?, verdicts?, reports?, status?}`. |
+| `PATCH /api/projects/{slug}` | `{name?, default_seed?, notify?, lead?}`: `default_seed` (integer, `null` clears) is the world seed that new agent issues and checks without a seed inherit; game reports keep what they send. `notify` is `{comments?, verdicts?, reports?, status?}`. `lead` (`claude`, `codex`, `antigravity`, `muse`; `null` or `"none"` clears) is the agent client whose top-level sessions alone get owner activity (see *Who hears the owner*). |
 | `GET /api/projects/{slug}/build` | `{project, build, builds_enabled}` |
 | `POST /api/projects/{slug}/build` | `{path, commit?, label?, built_at?, author?}` publishes the current build (a build script can call it) → `{project, build, stamped: [ids], unchanged}`; the same build again changes nothing |
 | `DELETE /api/projects/{slug}/build` | no current build (`?off=1`: stop using builds) → `{project, build, builds_enabled}` |
@@ -419,6 +419,16 @@ What it adds:
   session (and per project, for a session that has none yet) in `notify-cursors.json` in the data
   folder; sessions unused for 14 days are forgotten. The project's `notify` setting filters the
   events. Both hooks never create a data folder and print nothing when no desk or link exists.
+- **Who hears the owner:** one session should react to the owner, not every agent in the folder.
+  - *Delegated jobs:* in a session agent-bridge started as a subagent (`AGENT_BRIDGE_JOB_ID` or
+    `AGENT_BRIDGE_PARENT_JOB` set), SessionStart gives the summary line with "work from your brief"
+    instead of the triage prompt and handoff, the prompt hook adds nothing, the channel stays off, and
+    the MCP instructions and opencode rules say the same. The session that delegated the job handles
+    the owner.
+  - *Lead client:* `pair-desk project-set --lead codex` (or `lead` in `PATCH /api/projects/{slug}`)
+    gives owner activity (prompt hook and channel) only to that client's top-level sessions; the
+    others are told at session start which client handles it. `--lead none` restores the default,
+    where every session is notified. opencode cannot lead: it reads the desk only at session start.
 - **Channel (live push into a running session):** the MCP server declares the Claude Code
   `claude/channel` capability and the plugin lists it under `channels`. In a session started with
   the channel loaded it sends every owner event of the linked project as a
@@ -523,7 +533,9 @@ python integrations/opencode/install.py [--dry-run] [--uninstall]
 - `[mcp_servers.pair-desk]` in `config.toml`: `<desk> mcp`. Codex starts it in the
   session folder, so `linked_project` works as in Claude Code.
 - `[[hooks.SessionStart]]` (startup, resume, clear) in `config.toml`, running
-  `<desk> hook session-start`; its summary line becomes developer context. Codex runs
+  `<desk> hook session-start --client codex`; its summary line becomes developer context.
+  `[[hooks.UserPromptSubmit]]` runs `<desk> hook user-prompt-submit --client codex` for the owner's
+  new activity (see the UserPromptSubmit hook above). Codex runs
   a new or changed hook only after you review it: start `codex`, run `/hooks` and trust it
   (`codex exec --dangerously-bypass-hook-trust` skips that for one run).
 - Both live between `# >>> pair-desk ... >>>` / `# <<< pair-desk <<<` comments; uninstall also finds

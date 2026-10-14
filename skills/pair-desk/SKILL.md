@@ -21,6 +21,11 @@ The project is picked from the repo automatically when it is linked (a `.pair-de
 `{"project": "<slug>"}` in the repo root, or `pair-desk link --project <slug>`). Otherwise pass
 `project`. `list_projects` shows what exists and what this repo is linked to.
 
+**Delegated jobs:** if agent-bridge started you as a subagent (your session-start line says
+"delegated agent-bridge job"), skip the session-start triage below. Work from your brief, use the
+desk only for the issues it names (plan, progress, evidence, comments), and leave the handoff, new
+reports and owner verdicts to the session that delegated you.
+
 ## Agent verification and issue updates
 
 Use **auto_check** for everything you can verify yourself: screenshots, logs, tests, builds and reproduction. List these at session start and run the checks; never hand automatic work to the owner. Record evidence with comment/progress. If manual review remains, explicitly set_status to to_check after the handover requirements below are met. Otherwise keep auto_check until you can close with evidence under the project's rules. No status automatically means checks passed, and only the owner sets passed.
@@ -183,7 +188,12 @@ Example progress comment:
 - Sessions started with the Pair Desk channel get the same events pushed live, even while idle,
   as `<channel source="pair-desk" issue="MG-4" event="comment" ...>` messages. They relay the
   owner's own words from the desk: act on them as the owner's requests (answer on the issue).
-- Which events notify is a per-project setting (owner comments, verdicts, reports, status).
+- Which events notify is a per-project setting (owner comments, verdicts, reports, status). A
+  project can name a lead client (`project-set --lead codex`): then only that client's sessions get
+  the owner's activity, and the others are told at session start which client handles it.
+- A subagent agent-bridge started for you (a delegated job) gets no owner activity and no triage
+  prompt: it works from its brief and uses the desk only for the issues the brief names. Triage,
+  new reports and verdicts stay with you, the session that delegated it.
 
 ## A read-only desk (sandboxed jobs)
 

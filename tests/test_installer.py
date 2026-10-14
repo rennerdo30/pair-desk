@@ -101,7 +101,7 @@ class PlanTest(InstallerCase):
         self.assertIn(f"claude plugin marketplace add {installer.MARKETPLACE_REPO}", out)
         self.assertIn("claude plugin install agent-pair-programming@agent-pair-programming", out)
         self.assertIn(f"copy Pair Desk from", out)
-        self.assertIn("would update Codex MCP server and SessionStart hook", out)
+        self.assertIn("would update Codex MCP server and Pair Desk hooks", out)
         self.assertIn("would update opencode MCP server", out)
         self.assertIn("Dry run done: nothing was changed.", out)
         self.assertEqual(self.calls(), [], "a dry run runs no tool command")

@@ -64,7 +64,7 @@ export function deskSummary(cwd, { root = ROOT, python = process.env.PAIR_DESK_P
     }
     let child
     try {
-      const [command, args] = deskCommand(["hook", "session-start"], { root, python })
+      const [command, args] = deskCommand(["hook", "session-start", "--client", "opencode"], { root, python })
       child = spawn(command, args, {
         windowsHide: true,
         windowsVerbatimArguments: process.platform === "win32" && !python,
@@ -102,9 +102,21 @@ export function deskSummary(cwd, { root = ROOT, python = process.env.PAIR_DESK_P
 }
 
 /** The system prompt block for a summary (or null when the folder is not linked). */
-export function systemBlock(summary) {
+// Inside an agent-bridge delegated job (these variables set) the session that delegated it handles the
+// owner; the job keeps to its brief instead of the session-start triage in RULES.
+const JOB_RULES = [
+  "Pair Desk is the game owner's local playtest and issue desk; this folder is linked to one of its projects.",
+  "You are a delegated agent-bridge job: work from your brief and use the pair-desk MCP tools only for the issues it names.",
+  "Leave triage, new reports and owner verdicts to the session that delegated you. Never mark anything passed.",
+].join(" ")
+
+export function delegatedJob(env = process.env) {
+  return (env.AGENT_BRIDGE_JOB_ID || "").trim() || (env.AGENT_BRIDGE_PARENT_JOB || "").trim() || null
+}
+
+export function systemBlock(summary, env = process.env) {
   if (!summary) return null
-  return `<pair-desk>\n${RULES}\n${summary.context}\n</pair-desk>`
+  return `<pair-desk>\n${delegatedJob(env) ? JOB_RULES : RULES}\n${summary.context}\n</pair-desk>`
 }
 
 export const PairDeskPlugin = async ({ client, directory }) => {

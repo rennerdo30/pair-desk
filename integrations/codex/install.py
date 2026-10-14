@@ -8,8 +8,9 @@ What it sets up:
 - `[mcp_servers.pair-desk]` in `$CODEX_HOME/config.toml` (default `~/.codex/config.toml`):
   the stdio MCP server `<desk> mcp`.
 - A `SessionStart` hook in the same file (`[[hooks.SessionStart]]`, matcher startup|resume|clear)
-  running `<desk> hook session-start`, which adds the one-line desk summary for the
-  repo's linked project to the session context. Codex asks you to review new hooks once: open
+  running `<desk> hook session-start --client codex`, which adds the one-line desk summary for the
+  repo's linked project to the session context, and a `UserPromptSubmit` hook running
+  `<desk> hook user-prompt-submit --client codex`, which adds the owner's new activity. Codex asks you to review new hooks once: open
   `codex`, run `/hooks` and trust it.
 - The skills `pair-desk`, `pair-desk-serve`, `pair-desk-triage` in `~/.agents/skills/` (the
   user skill folder Codex reads), generated from this repo's `skills/`.
@@ -42,7 +43,7 @@ from integrations.common import (  # noqa: E402
 TOOL = "codex"
 BEGIN = "# >>> pair-desk: managed by agent-pair-programming/integrations/codex/install.py >>>"
 END = "# <<< pair-desk <<<"
-HOOK_EVENT = "SessionStart"
+HOOK_EVENTS = {"SessionStart": "session-start", "UserPromptSubmit": "user-prompt-submit"}
 
 _HEADER = re.compile(r"^\s*(\[\[?)\s*(.+?)\s*(\]\]?)\s*(#.*)?$")
 
@@ -58,7 +59,6 @@ def _toml_str(s: str) -> str:
 
 def managed_block(prefix: list[str]) -> str:
     """The pair-desk block; `prefix` runs desk.py (see desk_command), e.g. ["python", "C:/x/desk.py"]."""
-    hook_cmd = shell_line([*prefix, "hook", "session-start"])
     args = ", ".join(_toml_str(a) for a in [*prefix[1:], "mcp"])
     return "\n".join([
         BEGIN,
@@ -66,15 +66,16 @@ def managed_block(prefix: list[str]) -> str:
         f"command = {_toml_str(prefix[0])}",
         f"args = [{args}]",
         "startup_timeout_sec = 20",
-        "",
-        f"[[hooks.{HOOK_EVENT}]]",
-        'matcher = "startup|resume|clear"',
-        "",
-        f"[[hooks.{HOOK_EVENT}.hooks]]",
-        'type = "command"',
-        f"command = {_toml_str(hook_cmd)}",
-        "timeout = 10",
-        'statusMessage = "Pair Desk: reading the desk"',
+        *(line for event, action in HOOK_EVENTS.items() for line in (
+            "",
+            f"[[hooks.{event}]]",
+            *(['matcher = "startup|resume|clear"', ""] if event == "SessionStart" else []),
+            f"[[hooks.{event}.hooks]]",
+            'type = "command"',
+            f"command = {_toml_str(shell_line([*prefix, 'hook', action, '--client', 'codex']))}",
+            "timeout = 10",
+            *(['statusMessage = "Pair Desk: reading the desk"'] if event == "SessionStart" else []),
+        )),
         END,
         "",
     ])
@@ -98,15 +99,15 @@ def _sections(text: str) -> list[tuple[str | None, bool, list[str]]]:
 
 def _is_ours_hook(lines: list[str]) -> bool:
     body = "".join(lines)
-    return ("desk.py" in body or "pair-desk" in body) and "hook session-start" in body
+    return ("desk.py" in body or "pair-desk" in body) and any(f"hook {a}" in body for a in HOOK_EVENTS.values())
 
 
 def strip_pair_desk(text: str) -> tuple[str, bool]:
     """Remove every pair-desk entry: `[mcp_servers.pair-desk]` (and its sub-tables, whoever wrote
-    it), SessionStart hook entries that run `desk.py hook session-start`, and the marker comments.
+    it), SessionStart/UserPromptSubmit hook entries that run `desk.py hook ...`, and the marker comments.
     Everything else is kept byte for byte. Returns (text, removed_anything)."""
     mcp = f"mcp_servers.{SERVER_NAME}"
-    hook = f"hooks.{HOOK_EVENT}"
+    hooks = {f"hooks.{event}" for event in HOOK_EVENTS}
     secs = _sections(text)
     kept: list[str] = []
     removed = False
@@ -117,10 +118,10 @@ def strip_pair_desk(text: str) -> tuple[str, bool]:
             removed = True
             i += 1
             continue
-        if key == hook and is_array:
+        if key in hooks and is_array:
             group = list(lines)
             j = i + 1
-            while j < len(secs) and secs[j][0] is not None and secs[j][0].startswith(hook + "."):
+            while j < len(secs) and secs[j][0] is not None and secs[j][0].startswith(key + "."):
                 group.extend(secs[j][2])
                 j += 1
             if _is_ours_hook(group):
@@ -167,7 +168,7 @@ def removed_config(text: str | None) -> str | None:
 
 
 def run(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(description="Install Pair Desk (MCP server, SessionStart hook, skills) into Codex.")
+    ap = argparse.ArgumentParser(description="Install Pair Desk (MCP server, SessionStart and UserPromptSubmit hooks, skills) into Codex.")
     ap.add_argument("--uninstall", action="store_true", help="remove what this installer added")
     ap.add_argument("--dry-run", action="store_true", help="show what would change, write nothing")
     ap.add_argument("--codex-home", type=Path, default=None, help="Codex home (default: $CODEX_HOME or ~/.codex)")
@@ -188,7 +189,7 @@ def run(argv: list[str] | None = None) -> int:
     try:
         text = read_text(config)
         if args.uninstall:
-            update_config_file(config, removed_config(text), report, "Codex MCP server and SessionStart hook")
+            update_config_file(config, removed_config(text), report, "Codex MCP server and Pair Desk hooks")
             if not args.no_skills:
                 uninstall_skills(skills_dir, TOOL, report)
         else:
@@ -197,7 +198,7 @@ def run(argv: list[str] | None = None) -> int:
                 return 1
             prefix = desk_command(desk, args.python)
             update_config_file(config, merged_config(text, prefix), report,
-                               "Codex MCP server and SessionStart hook")
+                               "Codex MCP server and Pair Desk hooks")
             if not args.no_skills:
                 install_skills(skills_dir, TOOL, report, shell_line(prefix), force=args.force)
     except tomllib.TOMLDecodeError as e:
@@ -206,7 +207,7 @@ def run(argv: list[str] | None = None) -> int:
     report.print()
     if not args.uninstall and report.changed and not args.dry_run:
         print("Codex asks you to review new or changed hooks: start `codex`, run /hooks and trust the "
-              "Pair Desk SessionStart hook. Verify with: codex mcp list")
+              "Pair Desk hooks. Verify with: codex mcp list")
     return 0
 
 

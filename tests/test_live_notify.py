@@ -12,6 +12,7 @@ import sys
 import threading
 import time
 import unittest
+import unittest.mock
 
 from helpers import ROOT, StoreCase, TempDirCase
 from test_api import ApiCase
@@ -241,11 +242,13 @@ class ChannelTests(TempDirCase):
 
 
 class HookTests(StoreCase):
-    def hook(self, event, session="s1", env=None):
+    def hook(self, event, session="s1", env=None, client=None):
         payload = {"cwd": str(self.repo), "session_id": session, "prompt": "go"}
-        out = subprocess.run([sys.executable, DESK, "--data", str(self.tmp), "hook", event],
+        base = dict(os.environ)  # helpers clears the agent-bridge job variables
+        out = subprocess.run([sys.executable, DESK, "--data", str(self.tmp), "hook", event,
+                              *(["--client", client] if client else [])],
                              input=json.dumps(payload).encode(), capture_output=True, timeout=30,
-                             env=dict(os.environ, **(env or {})))
+                             env=dict(base, **(env or {})))
         self.assertEqual(out.returncode, 0, out.stderr)
         return json.loads(out.stdout) if out.stdout.strip() else None
 
@@ -301,10 +304,61 @@ class HookTests(StoreCase):
         self.assertIn("- Next step: Wire the UI", ctx)
         self.assertIn("- Traps: worktree dirty", ctx)
 
+    def test_delegated_job_gets_its_brief_not_the_owner(self):
+        job = {"AGENT_BRIDGE_JOB_ID": "codex-job-1234"}
+        start = self.hook("session-start", session="j1", env=job)
+        ctx = start["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("delegated agent-bridge job (codex-job-1234)", ctx)
+        self.assertNotIn("Read the handoff", ctx)
+        self.assertNotIn("none written yet", ctx)
+        self.hook("session-start", session="main")
+        self.store.add_comment("MG-1", "owner", "The east flow is still square")
+        self.assertIsNone(self.hook("user-prompt-submit", session="j1", env=job))
+        self.assertIsNone(self.hook("user-prompt-submit", session="j2", env={"AGENT_BRIDGE_PARENT_JOB": "codex-job-1"}))
+        self.assertIn("still square", self.hook("user-prompt-submit", session="main")
+                      ["hookSpecificOutput"]["additionalContext"])
+
+    def test_lead_client_alone_gets_owner_activity(self):
+        self.store.update_project("mygame", {"lead": "Codex"})
+        self.assertEqual(self.store.get_project("mygame")["lead"], "codex")
+        claude = self.hook("session-start", session="c1")["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("the codex session handles the owner's new activity", claude)
+        lead = self.hook("session-start", session="x1", client="codex")["hookSpecificOutput"]["additionalContext"]
+        self.assertNotIn("Pair Desk lead", lead)
+        self.store.add_comment("MG-1", "owner", "The east flow is still square")
+        self.assertIsNone(self.hook("user-prompt-submit", session="c1"))
+        self.assertIsNone(self.hook("user-prompt-submit", session="m1", client="muse"))
+        self.assertIn("still square", self.hook("user-prompt-submit", session="x1", client="codex")
+                      ["hookSpecificOutput"]["additionalContext"])
+        self.store.update_project("mygame", {"lead": "none"})
+        self.assertIsNone(self.store.get_project("mygame")["lead"])
+        self.store.add_comment("MG-1", "owner", "now everyone hears it")
+        self.assertIn("everyone", self.hook("user-prompt-submit", session="c1")["hookSpecificOutput"]["additionalContext"])
+        with self.assertRaises(Exception):
+            self.store.update_project("mygame", {"lead": "gemini"})
+
     def test_silent_without_link(self):
         out = subprocess.run([sys.executable, DESK, "--data", str(self.tmp), "hook", "user-prompt-submit"],
                              input=b'{"cwd": "C:/nowhere", "session_id": "x"}', capture_output=True, timeout=20)
         self.assertEqual((out.returncode, out.stdout), (0, b""))
+
+
+class JobAndLeadMcpTests(StoreCase):
+    def test_job_instructions_and_channel_lead(self):
+        from pair_desk.mcp import JOB_INSTRUCTIONS, McpServer
+        server = McpServer(self.tmp)
+        init = {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}
+        self.assertIn("Read the handoff", server.handle(init)["result"]["instructions"])
+        with unittest.mock.patch.dict(os.environ, {"AGENT_BRIDGE_JOB_ID": "codex-job-1"}):
+            self.assertEqual(server.handle(init)["result"]["instructions"], JOB_INSTRUCTIONS)
+        self.assertTrue(server._channel_leads("mygame"))
+        self.store.update_project("mygame", {"lead": "codex"})
+        self.assertFalse(server._channel_leads("mygame"))
+        self.store.update_project("mygame", {"lead": "claude"})
+        self.assertTrue(server._channel_leads("mygame"))
+        self.assertFalse(server._channel_leads("deleted-project"))
+        with self.assertRaises(Exception):
+            self.store.update_project("mygame", {"lead": "opencode"})
 
 
 class NotifyUnitTests(unittest.TestCase):

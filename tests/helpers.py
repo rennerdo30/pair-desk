@@ -1,5 +1,6 @@
 import base64
 import datetime as dt
+import os
 import shutil
 import sys
 import tempfile
@@ -11,6 +12,11 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from pair_desk.store import Store  # noqa: E402
+
+# The suite may itself run inside an agent-bridge delegated job; the desk under test starts as a top-level
+# session unless a test sets these (pair_desk.notify.BRIDGE_JOB_ENV).
+for _name in ("AGENT_BRIDGE_JOB_ID", "AGENT_BRIDGE_PARENT_JOB"):
+    os.environ.pop(_name, None)
 
 # 1x1 transparent PNG
 PNG = base64.b64decode(

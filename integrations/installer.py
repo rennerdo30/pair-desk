@@ -138,7 +138,7 @@ def plan_for(tool: str, action: str, ctx: Context) -> list[Step]:
 NOTES = {
     "claude": "  Restart Claude Code (or run /reload-plugins) afterwards.",
     "codex": "  Codex runs a new or changed hook only after you trust it: start codex, run /hooks and trust the "
-             "Pair Desk SessionStart hook.",
+             "Pair Desk hooks.",
     "opencode": "  Restart opencode afterwards.",
     "antigravity": "  Restart agy afterwards; review the Pair Desk plugin, /mcp and /hooks.",
     "muse": "  Restart Muse Code afterwards; user hooks run from settings.json. Review /mcp.",

@@ -178,6 +178,9 @@ MIGRATIONS = (
     # version 5: the project's current build and the build stamped on each issue handed to the owner
     ("projects", "build", "TEXT NOT NULL DEFAULT '{}'"),
     ("issues", "build", "TEXT NOT NULL DEFAULT '{}'"),
+    # the lead agent client, the only top-level session that receives owner activity. Detected as a missing
+    # column without a version bump, so older versions open a desk that has it without rewriting the marker.
+    ("projects", "lead", "TEXT NOT NULL DEFAULT ''"),
 )
 # Indexes over migrated columns, created after the columns exist.
 MIGRATION_INDEXES = (
@@ -209,6 +212,9 @@ MAX_HANDOFF_CHARS = 200_000
 # -- notifications ----------------------------------------------------------------------------
 # Owner activity a session hears about, each switchable per project (all on by default).
 NOTIFY_EVENTS = ("comments", "verdicts", "reports", "status")
+# Agent clients a project can name as its lead (Store.update_project `lead`): those whose hooks deliver
+# owner activity on every prompt. opencode only reads the desk at session start, so it cannot lead.
+LEAD_CLIENTS = ("claude", "codex", "antigravity", "muse")
 # Actors whose activity counts as the owner's. The web UI writes "owner".
 OWNER_ACTORS = ("owner",)
 # -- builds -----------------------------------------------------------------------------------
@@ -1097,6 +1103,7 @@ class Store:
             "issue_count": row["next_number"] - 1,
             "default_seed": row["default_seed"],
             "notify": normalize_notify(None, json.loads(row["notify"] or "{}")),
+            "lead": row["lead"] or None,
             **Store._build_fields(row),
         }
 
@@ -1128,7 +1135,8 @@ class Store:
 
     def update_project(self, slug: str, changes: dict) -> dict:
         """Project settings: `name`, `default_seed` (the world seed agent-filed checks inherit;
-        null or "" clears it) and `notify` (which owner events reach agent sessions)."""
+        null or "" clears it), `notify` (which owner events reach agent sessions) and `lead` (the agent
+        client whose top-level session alone receives that activity; null or "" means every client)."""
         if not isinstance(changes, dict):
             raise Invalid("changes must be an object")
         row = self._project_row(slug)
@@ -1144,6 +1152,15 @@ class Store:
         if "notify" in changes:
             sets.append("notify=?")
             params.append(json.dumps(normalize_notify(changes["notify"], json.loads(row["notify"] or "{}"))))
+        if "lead" in changes:
+            lead = changes["lead"]
+            lead = "" if lead is None else str(lead).strip().lower()
+            if lead in ("none", "any", "all"):
+                lead = ""
+            if lead and lead not in LEAD_CLIENTS:
+                raise Invalid(f"lead is one of {', '.join(LEAD_CLIENTS)} or none (got {lead!r})")
+            sets.append("lead=?")
+            params.append(lead)
         if sets:
             with self._tx() as c:
                 c.execute(f"UPDATE projects SET {', '.join(sets)} WHERE id=?", params + [row["id"]])
