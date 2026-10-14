@@ -83,7 +83,7 @@ class CodexInstallTest(TempDirCase):
         self.assertEqual(len(starts), 2)
         self.assertEqual(starts[0]["hooks"][0]["command"], "python other_tool.py")
         self.assertEqual(starts[1]["matcher"], "startup|resume|clear")
-        self.assertEqual(starts[1]["hooks"][0]["command"], common.shell_line([*self.prefix, "hook", "session-start"]))
+        self.assertEqual(starts[1]["hooks"][0]["command"], common.shell_line([*self.prefix, "hook", "session-start", "--client", "codex"]))
         self.assertEqual(len(cfg["hooks"]["PreToolUse"]), 1)
         self.assertIn("state", cfg["hooks"])
         self.assertEqual(cfg["model"], "gpt-6-luna")

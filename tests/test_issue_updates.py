@@ -84,7 +84,7 @@ class UpdateStoreTests(StoreCase):
         self.store = Store(self.tmp)
         self.assertEqual(self.store.get_issue('MG-1')['status'], 'to_check')
         self.assertEqual(self.store.get_issue('MG-2')['body'], 'original')
-        self.assertEqual(self.store.conn.execute("SELECT value FROM meta WHERE key='schema'").fetchone()[0], '6')
+        self.assertEqual(self.store.conn.execute("SELECT value FROM meta WHERE key='schema'").fetchone()[0], '7')
         self.store.set_status('MG-2', 'auto_check', 'agent')
         self.assertEqual(self.store.list_projects()[0]['counts']['auto_check'], 1)
 

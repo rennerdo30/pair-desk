@@ -689,8 +689,11 @@ class McpServer:
     def _channel_loop(self) -> None:
         """Push owner activity for the linked project as channel messages while the session runs."""
         try:
-            enabled, claude_pid = notify.detect_channel()
+            # A delegated job never gets the push, even under a channel-enabled Claude ancestor.
+            enabled, claude_pid = (False, None) if notify.delegated_job() else notify.detect_channel()
             slug = resolve_project(self.data_dir, self.cwd) if enabled else None
+            if slug and not notify.receives_activity(self.store.get_project(slug).get("lead"), "claude"):
+                enabled = False
             self.channel_state = {"enabled": bool(enabled and slug), "project": slug, "claude_pid": claude_pid}
             if not enabled or not slug:
                 return

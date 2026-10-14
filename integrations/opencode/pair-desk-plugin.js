@@ -64,7 +64,7 @@ export function deskSummary(cwd, { root = ROOT, python = process.env.PAIR_DESK_P
     }
     let child
     try {
-      const [command, args] = deskCommand(["hook", "session-start"], { root, python })
+      const [command, args] = deskCommand(["hook", "session-start", "--client", "opencode"], { root, python })
       child = spawn(command, args, {
         windowsHide: true,
         windowsVerbatimArguments: process.platform === "win32" && !python,

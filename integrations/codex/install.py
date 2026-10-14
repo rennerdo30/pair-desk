@@ -58,7 +58,7 @@ def _toml_str(s: str) -> str:
 
 def managed_block(prefix: list[str]) -> str:
     """The pair-desk block; `prefix` runs desk.py (see desk_command), e.g. ["python", "C:/x/desk.py"]."""
-    hook_cmd = shell_line([*prefix, "hook", "session-start"])
+    hook_cmd = shell_line([*prefix, "hook", "session-start", "--client", "codex"])
     args = ", ".join(_toml_str(a) for a in [*prefix[1:], "mcp"])
     return "\n".join([
         BEGIN,

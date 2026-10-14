@@ -15,7 +15,7 @@ from pathlib import Path
 from . import APP_NAME, VERSION, notify
 from .context import resolve_project, save_link
 from .paths import resolve_data_dir
-from .store import (HANDOFF_SECTIONS, KINDS, NOTIFY_EVENTS, PLAN_STATES, PRIORITIES, SIZES, SOURCES, STATUSES,
+from .store import (HANDOFF_SECTIONS, KINDS, LEAD_CLIENTS, NOTIFY_EVENTS, PLAN_STATES, PRIORITIES, SIZES, SOURCES, STATUSES,
                     DeskError, Store, handover_problem, location_commands, parse_build_state, split_handoff)
 
 STATUS_LABEL = {
@@ -336,6 +336,8 @@ def cmd_project_set(args, store: Store) -> int:
         changes["default_seed"] = None if args.default_seed.strip().lower() in ("", "none", "clear") else args.default_seed
     if args.notify is not None:
         changes["notify"] = args.notify
+    if args.lead is not None:
+        changes["lead"] = args.lead
     p = store.update_project(slug, changes)
     result = {"project": p}
     if args.backfill_seed:
@@ -347,7 +349,8 @@ def cmd_project_set(args, store: Store) -> int:
         return 0
     seed = p["default_seed"] if p["default_seed"] is not None else "none"
     on = [k for k, v in p["notify"].items() if v]
-    print(f"{p['slug']}: name {p['name']}, default seed {seed}, notify: {', '.join(on) or 'nothing'}")
+    print(f"{p['slug']}: name {p['name']}, default seed {seed}, notify: {', '.join(on) or 'nothing'}, "
+          f"lead: {p['lead'] or 'every agent'}")
     if "backfill" in result:
         changed = result["backfill"]["changed"]
         print(f"Gave seed {p['default_seed']} to {len(changed)} issue{'s' if len(changed) != 1 else ''}"
@@ -855,7 +858,11 @@ def cmd_hook(args, data_dir: Path) -> int:
 
     session-start: the counts line plus the handoff's next step and traps, and it starts this
     session's notification cursor. user-prompt-submit: owner activity since the session last
-    looked (see notify.py)."""
+    looked (see notify.py).
+
+    An agent-bridge delegated job (notify.delegated_job) gets one line pointing it at its brief and no
+    owner activity; when the project names a lead client, only that client's top-level sessions get
+    owner activity. So one session reacts to the owner instead of all of them."""
     try:
         data = _hook_input()
         cwd, session_id = data.get("cwd"), data.get("session_id")
@@ -878,6 +885,7 @@ def cmd_hook(args, data_dir: Path) -> int:
                 if line:
                     output["systemMessage"] = line
                 _out_json(output)
+        job = notify.delegated_job()
         if args.event == "session-start":
             # The web desk starts with the session (and is replaced when an older version runs), never blocking it.
             try:
@@ -886,24 +894,34 @@ def cmd_hook(args, data_dir: Path) -> int:
             except Exception:  # noqa: BLE001 - autostart must never break the session
                 pass
             line = session_summary(data_dir, cwd)
-            if line:
-                context = "\n".join([line + ". Read the handoff (get_handoff) and failed and reported items "
-                                             "(list_issues) before starting; see the pair-desk skill.",
-                                      *build_lines(data_dir, cwd), *handoff_lines(data_dir, cwd)])
-                emit_context("SessionStart", context, line)
+            if line and job:
+                emit_context("SessionStart", f"{line}. You are a delegated agent-bridge job ({job}): work from your "
+                             "brief and use the desk only for the issues it names. Leave triage, new reports and "
+                             "owner verdicts to the session that delegated you.")
+            elif line:
                 slug = resolve_project(data_dir, cwd)
                 with Store(data_dir) as store:
+                    lead = store.get_project(slug).get("lead")
                     notify.mark_seen(data_dir, slug, session_id, store.event_cursor())
+                lines = [line + ". Read the handoff (get_handoff) and failed and reported items "
+                                "(list_issues) before starting; see the pair-desk skill."]
+                if not notify.receives_activity(lead, client):
+                    lines.append(f"Pair Desk lead: the {lead} session handles the owner's new activity for this "
+                                 "project; leave new reports and verdicts to it unless the owner asks you.")
+                emit_context("SessionStart", "\n".join([*lines, *build_lines(data_dir, cwd),
+                                                        *handoff_lines(data_dir, cwd)]), line)
         elif args.event == "user-prompt-submit":
-            if not (Path(data_dir) / "desk.sqlite").is_file():
+            if job or not (Path(data_dir) / "desk.sqlite").is_file():
                 return 0
             slug = resolve_project(data_dir, cwd)
             if not slug:
                 return 0
             with Store(data_dir) as store:
                 try:
-                    store.get_project(slug)
+                    project = store.get_project(slug)
                 except DeskError:
+                    return 0
+                if not notify.receives_activity(project.get("lead"), client):
                     return 0
                 block = notify.prompt_context(store, slug, session_id)
             if block:
@@ -964,6 +982,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="also give the default seed to existing agent work and checks without one")
     s.add_argument("--notify", help="owner events that notify agent sessions, comma separated: "
                                     + ",".join(NOTIFY_EVENTS) + " (or 'none')")
+    s.add_argument("--lead", help="the agent client whose top-level sessions alone get owner activity: "
+                                  + ",".join(LEAD_CLIENTS) + " (or 'none' for every agent)")
     s.add_argument("--author")
     s.add_argument("--json", action="store_true")
 
@@ -1138,8 +1158,9 @@ def build_parser() -> argparse.ArgumentParser:
     add("mcp", "run the stdio MCP server (used by the Claude Code plugin)")
     s = add("hook", "plugin hook entry point")
     s.add_argument("event", choices=["session-start", "user-prompt-submit"])
-    s.add_argument("--client", choices=["claude", "antigravity", "muse"], default="claude",
-                   help="native hook input/output format (default: Claude Code, also used by Codex)")
+    s.add_argument("--client", choices=["claude", "codex", "antigravity", "muse", "opencode"], default="claude",
+                   help="the calling agent: its native hook format (Codex and opencode use Claude Code's) and "
+                        "the name a project's lead setting matches")
     s = add("outbox", "replay desk writes queued where the desk was read-only (a sandboxed agent job, PD-4)")
     s.add_argument("action", choices=["show", "replay"])
     s.add_argument("path", help="the outbox file (.cache/pair-desk-outbox.jsonl in the job's worktree)")

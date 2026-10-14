@@ -37,6 +37,26 @@ CHANNEL_FRESH_SECONDS = 30                  # a heartbeat older than this means 
 SESSION_TTL = _dt.timedelta(days=14)         # forget session cursors not used for this long
 MAX_LINES = 12
 MAX_ANCESTORS = 8
+# agent-bridge sets these on every delegated job (subagent) it starts; top-level sessions have neither.
+BRIDGE_JOB_ENV = ("AGENT_BRIDGE_JOB_ID", "AGENT_BRIDGE_PARENT_JOB")
+
+
+def delegated_job(env: dict | None = None) -> str | None:
+    """The agent-bridge job this process belongs to, or None in a top-level session. Delegated jobs
+    work from their brief: they get no desk triage prompt and no owner activity, so only the session
+    that delegated them reacts to the owner."""
+    env = os.environ if env is None else env
+    for name in BRIDGE_JOB_ENV:
+        value = (env.get(name) or "").strip()
+        if value:
+            return value
+    return None
+
+
+def receives_activity(lead: str | None, client: str) -> bool:
+    """Whether a top-level session of `client` gets owner activity: every client when the project
+    names no lead, else only the lead client."""
+    return not lead or lead == client
 
 
 # ---------------------------------------------------------------------------------------- text
