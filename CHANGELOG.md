@@ -6,6 +6,8 @@ and the project uses [Semantic Versioning](https://semver.org/). The version liv
 
 ## [Unreleased]
 
+## [1.9.0] - 2026-10-15
+
 ### Changed
 
 - Agent-bridge subagents no longer react to the owner. Hooks in a delegated job (`AGENT_BRIDGE_JOB_ID`
