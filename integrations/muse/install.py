@@ -19,6 +19,7 @@ from integrations.common import (DESK_PY, MARKER, SKILL_NAMES, Report, agents_sk
                                  desk_command, install_skills, shell_line,
                                  uninstall_skills, update_config_file)
 from integrations.native import check_unlinked, dump, hook_command, load_object, remove_managed_groups
+from pair_desk.paths import resolve_data_dir
 
 TOOL = "muse"
 EVENTS = {"SessionStart": "session-start", "UserPromptSubmit": "user-prompt-submit"}
@@ -29,9 +30,11 @@ def config_dir() -> Path:
     return (Path(base) if base else Path.home() / ".config") / "muse"
 
 
-def mcp_entry(prefix: list[str]) -> dict:
-    return {"transport": "stdio", "framing": "jsonl", "command": prefix[0], "args": [*prefix[1:], "mcp"],
-            "env": {"PAIR_DESK_AUTHOR": TOOL}, "enabled": True, "mode": "optional"}
+def mcp_entry(prefix: list[str], data_dir: str | None = None) -> dict:
+    return {"transport": "stdio", "framing": "auto", "command": prefix[0], "args": [*prefix[1:], "mcp"],
+            "env": {"PAIR_DESK_AUTHOR": TOOL,
+                    "PAIR_DESK_DATA": data_dir or str(resolve_data_dir(None).absolute())},
+            "enabled": True, "mode": "optional"}
 
 
 def merged_settings(data: dict, prefix: list[str] | None, uninstall: bool = False) -> dict:
@@ -61,7 +64,7 @@ def merged_settings(data: dict, prefix: list[str] | None, uninstall: bool = Fals
         servers.pop("pair-desk", None)
     else:
         data.setdefault("schema_version", 1)
-        servers["pair-desk"] = mcp_entry(prefix)
+        servers["pair-desk"] = mcp_entry(prefix, (existing or {}).get("env", {}).get("PAIR_DESK_DATA"))
     for event, action in EVENTS.items():
         groups = remove_managed_groups(hooks.get(event, []), TOOL)
         if not uninstall:

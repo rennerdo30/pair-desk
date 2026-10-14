@@ -162,7 +162,7 @@ class NativeInstallTest(TempDirCase):
         value = json.loads(self.config.read_text())
         self.assertEqual(value["model"], "user-model")
         self.assertEqual(value["mcp_servers"]["other"], original["mcp_servers"]["other"])
-        self.assertEqual(value["mcp_servers"]["pair-desk"]["framing"], "jsonl")
+        self.assertEqual(value["mcp_servers"]["pair-desk"]["framing"], "auto")
         self.assertEqual(value["hooks"]["Stop"], original["hooks"]["Stop"])
         self.assertEqual(len(value["hooks"]["SessionStart"]), 2)
         self.assertTrue(native.managed_hook(value["hooks"]["SessionStart"][1], "muse"))
@@ -205,6 +205,27 @@ class NativeInstallTest(TempDirCase):
             self.assertEqual(len(new["hooks"][event]), 1)
         self.assertEqual(new["mcp_servers"]["pair-desk"]["command"], "different-python")
         self.assertNotEqual(old, new)
+
+    def test_muse_entry_works_without_home_variables_and_preserves_data_path(self):
+        data = str(self.tmp / "custom-data")
+        prefix = [sys.executable, common.fwd(common.DESK_PY)]
+        entry = muse.mcp_entry(prefix, data)
+        env = {**entry["env"], "PAIR_DESK_CHANNEL": "off"}
+        for key in ("PATH", "SystemRoot", "WINDIR"):
+            if key in os.environ:
+                env[key] = os.environ[key]
+        message = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}).encode()
+        frame = f"Content-Length: {len(message)}\r\n\r\n".encode() + message
+        result = subprocess.run([entry["command"], *entry["args"]], input=frame,
+                                capture_output=True, env=env, cwd=self.tmp, timeout=20)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        headers, body = result.stdout.split(b"\r\n\r\n", 1)
+        self.assertEqual(int(headers.split(b":", 1)[1]), len(body))
+        self.assertEqual(json.loads(body)["id"], 1)
+        old = {"schema_version": 1, "mcp_servers": {"pair-desk": entry}}
+        with patch.dict(os.environ, {"PAIR_DESK_DATA": str(self.tmp / "different-data")}):
+            updated = muse.merged_settings(old, prefix)
+        self.assertEqual(updated["mcp_servers"]["pair-desk"]["env"]["PAIR_DESK_DATA"], data)
 
     def test_linked_config_is_rejected(self):
         target = self.tmp / "foreign.json"

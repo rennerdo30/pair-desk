@@ -6,6 +6,14 @@ and the project uses [Semantic Versioning](https://semver.org/). The version liv
 
 ## [Unreleased]
 
+## [1.8.1] - 2026-10-14
+
+### Fixed
+
+- Muse TUI MCP startup: use framing accepted by both native settings parsers, accept
+  Content-Length requests alongside JSONL, and pass the data directory explicitly to
+  MCP child processes whose home-directory environment has been stripped.
+
 ## [1.8.0] - 2026-10-14
 
 ### Added

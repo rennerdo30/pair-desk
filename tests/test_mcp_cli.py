@@ -1,3 +1,4 @@
+import io
 import json
 import os
 import subprocess
@@ -8,9 +9,68 @@ from helpers import ROOT, StoreCase, TempDirCase
 
 from pair_desk.cli import _msys_root, main, session_summary, undo_msys_paths
 from pair_desk.context import resolve_project, save_link
+from pair_desk.mcp import McpServer
 from pair_desk.store import Store
 
 DESK = str(ROOT / "desk.py")
+
+
+class FramingTests(TempDirCase):
+    def frame(self, value):
+        body = json.dumps(value, ensure_ascii=False).encode("utf-8")
+        return f"Content-Length: {len(body)}\r\n\r\n".encode("ascii") + body
+
+    def replies(self, raw):
+        source = io.BytesIO(raw)
+        values = []
+        while line := source.readline():
+            self.assertTrue(line.startswith(b"Content-Length: "), line)
+            length = int(line.split(b":", 1)[1])
+            self.assertEqual(source.readline(), b"\r\n")
+            body = source.read(length)
+            self.assertEqual(len(body), length)
+            values.append(json.loads(body))
+        return values
+
+    def serve(self, raw, source_type=io.BytesIO):
+        output = io.BytesIO()
+        McpServer(self.tmp).serve(source_type(raw), output)
+        return output.getvalue()
+
+    def test_content_length_multiple_frames_notifications_and_utf8(self):
+        messages = [{"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+                    {"jsonrpc": "2.0", "method": "notifications/cancelled"},
+                    {"jsonrpc": "2.0", "id": "\u65e5\u672c", "method": "unknown/\u65e5\u672c"},
+                    {"jsonrpc": "2.0", "id": 3, "method": "ping"}]
+        result = self.replies(self.serve(b"".join(self.frame(value) for value in messages)))
+        self.assertEqual([value["id"] for value in result], [1, "\u65e5\u672c", 3])
+        self.assertEqual(result[1]["error"]["code"], -32601)
+        self.assertEqual(result[2]["result"], {})
+
+    def test_partial_body_reads_and_content_type_header(self):
+        class Fragmented(io.BytesIO):
+            def read(self, size=-1):
+                return super().read(min(size, 2))
+        value = {"jsonrpc": "2.0", "id": 7, "method": "ping"}
+        raw = b"Content-Type: application/json\r\n" + self.frame(value)
+        self.assertEqual(self.replies(self.serve(raw, Fragmented))[0]["id"], 7)
+
+    def test_malformed_or_truncated_frames_fail_and_stop(self):
+        cases = [b"Content-Length: -1\r\n\r\n{}", b"Content-Length: 0\r\n\r\n",
+                 b"Content-Length: 999999999\r\n\r\n", b"Content-Length: 10\r\n\r\n{}",
+                 b"Content-Length: 2\r\nContent-Length: 2\r\n\r\n{}",
+                 b"Content-Type: application/json\r\n\r\n{}", b"Content-Length: 2\r\n"]
+        for raw in cases:
+            with self.subTest(raw=raw):
+                result = self.replies(self.serve(raw))
+                self.assertEqual(len(result), 1)
+                self.assertEqual(result[0]["error"]["code"], -32700)
+
+    def test_jsonl_remains_the_default_and_recovers_after_parse_error(self):
+        raw = b'{broken\n{"jsonrpc":"2.0","id":5,"method":"ping"}\n'
+        result = [json.loads(line) for line in self.serve(raw).splitlines()]
+        self.assertEqual(result[0]["error"]["code"], -32700)
+        self.assertEqual(result[1]["id"], 5)
 
 
 def rpc(proc, msg):

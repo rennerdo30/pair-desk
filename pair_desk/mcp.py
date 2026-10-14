@@ -1,4 +1,6 @@
-"""A stdio MCP server over the Pair Desk store (JSON-RPC 2.0, one message per line).
+"""A stdio MCP server over the Pair Desk store (JSON-RPC 2.0).
+
+JSONL remains the default; Content-Length clients receive matching UTF-8 byte frames.
 
 Claude Code launches it through the plugin manifest. It reads and writes the same data folder
 as the web server and the CLI, so no HTTP server has to run. Agents may not mark anything
@@ -351,6 +353,7 @@ class McpServer:
         }
         self._out = None
         self._write_lock = threading.Lock()
+        self._header_framing = False
         self._stop = threading.Event()
         self._channel: threading.Thread | None = None
         self.channel_state: dict[str, Any] = {"enabled": False}
@@ -627,8 +630,52 @@ class McpServer:
         if self._out is None:
             return
         with self._write_lock:
-            self._out.write(json.dumps(obj, ensure_ascii=False).encode("utf-8") + b"\n")
+            body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
+            if self._header_framing:
+                self._out.write(f"Content-Length: {len(body)}\r\n\r\n".encode("ascii") + body)
+            else:
+                self._out.write(body + b"\n")
             self._out.flush()
+
+    def _read_message(self, stdin) -> bytes | None:
+        while True:
+            raw = stdin.readline()
+            if not raw:
+                return None
+            if raw.strip():
+                break
+        if not raw.lower().startswith((b"content-length:", b"content-type:")):
+            return raw
+        self._header_framing = True
+        length = None
+        header_bytes = 0
+        while raw.strip():
+            header_bytes += len(raw)
+            if header_bytes > 8192:
+                raise ValueError("frame headers too large")
+            key, sep, value = raw.partition(b":")
+            if not sep:
+                raise ValueError("invalid frame header")
+            if key.lower() == b"content-length":
+                if length is not None or not value.strip().isdigit():
+                    raise ValueError("invalid frame length")
+                length = int(value.strip())
+                if not 0 < length <= 64 * 1024 * 1024:
+                    raise ValueError("frame length out of range")
+            raw = stdin.readline()
+            if not raw:
+                raise ValueError("truncated frame headers")
+        if length is None:
+            raise ValueError("missing frame length")
+        chunks = []
+        remaining = length
+        while remaining:
+            chunk = stdin.read(remaining)
+            if not chunk:
+                raise ValueError("truncated frame body")
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        return b"".join(chunks)
 
     def start_channel(self) -> None:
         if self._channel is None:
@@ -665,12 +712,16 @@ class McpServer:
         stdin = stdin or sys.stdin.buffer
         stdout = stdout or sys.stdout.buffer
         self._out = stdout
-        for raw in stdin:
-            line = raw.strip()
-            if not line:
-                continue
+        while True:
             try:
-                msg = json.loads(line.decode("utf-8"))
+                raw = self._read_message(stdin)
+            except ValueError:
+                self._send(_error(None, -32700, "invalid or truncated frame"))
+                break
+            if raw is None:
+                break
+            try:
+                msg = json.loads(raw.decode("utf-8"))
             except (UnicodeDecodeError, ValueError):
                 reply: Any = _error(None, -32700, "parse error")
             else:
