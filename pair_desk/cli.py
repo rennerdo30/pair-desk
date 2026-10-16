@@ -280,6 +280,59 @@ def cmd_stop(args, data_dir: Path) -> int:
     return 0
 
 
+def _megabytes(n: int) -> str:
+    return f"{n / 1e6:.1f} MB"
+
+
+def cmd_backup(args, data_dir: Path) -> int:
+    from .backup import create_backup
+    try:
+        res = create_backup(data_dir, Path(args.out) if args.out else None)
+    except (DeskError, OSError, sqlite3.Error) as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    if args.json:
+        _out_json(res)
+        return 0
+    c = res["counts"]
+    print(f"Backed up {c['projects']} projects, {c['issues']} issues, {c['comments']} comments and "
+          f"{res['attachment_files']} attachment files to {res['path']} ({_megabytes(res['size'])})")
+    if res["missing"]:
+        print(f"warning: {len(res['missing'])} attachment files were already missing from {data_dir}:", file=sys.stderr)
+        for rel in res["missing"][:10]:
+            print(f"  {rel}", file=sys.stderr)
+    print("Keep a copy on another disk or machine; restore with: pair-desk restore <file>")
+    return 0
+
+
+def cmd_restore(args, data_dir: Path) -> int:
+    from .backup import read_manifest, restore_backup
+    try:
+        if args.check:
+            res = read_manifest(Path(args.file))
+        else:
+            res = restore_backup(Path(args.file), data_dir, replace=args.replace)
+    except (DeskError, OSError, sqlite3.Error) as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    if args.json:
+        _out_json(res)
+        return 0
+    c = res["counts"]
+    what = (f"{c['projects']} projects, {c['issues']} issues, {c['comments']} comments "
+            f"(Pair Desk {res['app_version']}, {res['created_at']})")
+    if args.check:
+        print(f"{args.file}: a Pair Desk backup with {what}; this version can restore it")
+        return 0
+    print(f"Restored {what} into {res['data']}")
+    if res["previous"]:
+        print(f"The desk that was there is kept at {res['previous']}")
+    for path in res["missing_links"]:
+        print(f"warning: linked repo folder not found here: {path} (link it again: pair-desk link)", file=sys.stderr)
+    print("Run `pair-desk install` if this machine has no agent integrations yet, then start the desk.")
+    return 0
+
+
 def cmd_serve(args, data_dir: Path) -> int:
     if args.detach:
         return cmd_serve_detached(args, data_dir)
@@ -1105,6 +1158,17 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--json", action="store_true", help="accepted for symmetry; export is always JSON")
     s.add_argument("--out", help="write to this file instead of stdout")
 
+    s = add("backup", "back up the whole desk (database, attachments, repo links) to one zip, while it runs")
+    s.add_argument("--out", help="the zip to write (default: <data>/backups/pair-desk-<time>.zip)")
+    s.add_argument("--json", action="store_true")
+
+    s = add("restore", "restore a backup zip into the data folder (the current desk is moved aside, never deleted)")
+    s.add_argument("file", help="a zip written by `backup`")
+    s.add_argument("--replace", action="store_true",
+                   help="the data folder already has a desk: move it to <data>.before-restore-<time> first")
+    s.add_argument("--check", action="store_true", help="only check that this version can restore the file")
+    s.add_argument("--json", action="store_true")
+
     s = add("plan", "show or write an issue's plan (steps and a verification line)")
     s.add_argument("id")
     s.add_argument("--step", action="append", help="a plan step; repeat for each, in order (replaces the plan)")
@@ -1265,7 +1329,7 @@ def cmd_installer(args, data_dir: Path) -> int:
     return run(args, data_dir)
 
 
-RAW_COMMANDS = {"serve": cmd_serve, "stop": cmd_stop, "mcp": cmd_mcp, "hook": cmd_hook, "outbox": cmd_outbox,
+RAW_COMMANDS = {"serve": cmd_serve, "stop": cmd_stop, "backup": cmd_backup, "restore": cmd_restore, "mcp": cmd_mcp, "hook": cmd_hook, "outbox": cmd_outbox,
                 "install": cmd_installer, "update": cmd_installer, "uninstall": cmd_installer}
 
 
