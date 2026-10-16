@@ -306,10 +306,10 @@ def cmd_backup(args, data_dir: Path) -> int:
 
 
 def cmd_restore(args, data_dir: Path) -> int:
-    from .backup import read_manifest, restore_backup
+    from .backup import check_backup, restore_backup
     try:
         if args.check:
-            res = read_manifest(Path(args.file))
+            res = check_backup(Path(args.file))
         else:
             res = restore_backup(Path(args.file), data_dir, replace=args.replace)
     except (DeskError, OSError, sqlite3.Error) as e:
@@ -322,11 +322,15 @@ def cmd_restore(args, data_dir: Path) -> int:
     what = (f"{c['projects']} projects, {c['issues']} issues, {c['comments']} comments "
             f"(Pair Desk {res['app_version']}, {res['created_at']})")
     if args.check:
-        print(f"{args.file}: a Pair Desk backup with {what}; this version can restore it")
+        print(f"{args.file}: a complete Pair Desk backup with {what} (every checksum matches); "
+              f"this version can restore it")
         return 0
     print(f"Restored {what} into {res['data']}")
     if res["previous"]:
-        print(f"The desk that was there is kept at {res['previous']}")
+        print(f"The desk that was there is kept, with its backups/ and logs, at {res['previous']}")
+    if res["unlisted_attachments"]:
+        print(f"warning: {len(res['unlisted_attachments'])} attachment files the database refers to are not in "
+              f"the backup", file=sys.stderr)
     for path in res["missing_links"]:
         print(f"warning: linked repo folder not found here: {path} (link it again: pair-desk link)", file=sys.stderr)
     print("Run `pair-desk install` if this machine has no agent integrations yet, then start the desk.")
@@ -1166,7 +1170,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("file", help="a zip written by `backup`")
     s.add_argument("--replace", action="store_true",
                    help="the data folder already has a desk: move it to <data>.before-restore-<time> first")
-    s.add_argument("--check", action="store_true", help="only check that this version can restore the file")
+    s.add_argument("--check", action="store_true",
+                   help="only verify the file (manifest, sizes, checksums) and that this version can restore it")
     s.add_argument("--json", action="store_true")
 
     s = add("plan", "show or write an issue's plan (steps and a verification line)")

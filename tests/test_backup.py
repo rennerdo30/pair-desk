@@ -1,6 +1,7 @@
 """Whole-desk backup and restore: snapshot while open, checks before restoring, never overwriting."""
 
 import contextlib
+import hashlib
 import os
 import io
 import json
@@ -11,7 +12,7 @@ import zipfile
 from helpers import PNG, TempDirCase
 
 from pair_desk import backup
-from pair_desk.backup import BackupError, create_backup, read_manifest, restore_backup
+from pair_desk.backup import BackupError, check_backup, create_backup, read_manifest, restore_backup
 from pair_desk.cli import main
 from pair_desk.context import save_link
 from pair_desk.store import Store
@@ -91,18 +92,76 @@ class BackupTests(TempDirCase):
                     dst.writestr(*out)
         return bad
 
-    def test_damaged_or_unsafe_backups_change_nothing(self):
+    def _forge(self, name, db_sql=None, manifest=None, rename=None):
+        """A copy of the backup whose database ran `db_sql`, with `manifest(m)` applied and entries renamed by
+        `rename` ({old: new}); the manifest's sizes and checksums are recomputed, so only the forged part is wrong."""
+        out = self.tmp / f"{name}.zip"
+        with zipfile.ZipFile(self.zip) as src:
+            m = json.loads(src.read("manifest.json"))
+            entries = {n: src.read(n) for n in src.namelist() if n != "manifest.json"}
+        if db_sql:
+            db = self.tmp / f"{name}.sqlite"
+            db.write_bytes(entries["desk.sqlite"])
+            conn = sqlite3.connect(db)
+            conn.executescript(db_sql)
+            conn.close()
+            entries["desk.sqlite"] = db.read_bytes()
+        for old, new in (rename or {}).items():
+            entries[new] = entries.pop(old)
+        m["files"] = [{"path": n, "size": len(d), "sha256": hashlib.sha256(d).hexdigest()} for n, d in entries.items()]
+        if manifest:
+            manifest(m)
+        with zipfile.ZipFile(out, "w") as z:
+            z.writestr("manifest.json", json.dumps(m))
+            for n, d in entries.items():
+                z.writestr(n, d)
+        return out
+
+    def test_bad_backups_change_nothing(self):
         create_backup(self.data, self.zip)
-        damaged = self._rewrite(lambda n, d: (n, d[:-1] + b"x") if n.endswith(".png") else (n, d), "damaged")
-        unsafe = self._rewrite(lambda n, d: ("../evil.txt", d) if n == "projects.json" else (n, d), "unsafe")
-        missing = self._rewrite(lambda n, d: None if n == "desk.sqlite" else (n, d), "missing")
-        for bad, msg in ((damaged, "checksum"), (unsafe, "unsafe"), (missing, "missing")):
-            target = self.tmp / f"target-{msg}"
-            with self.subTest(msg), self.assertRaisesRegex(BackupError, msg):
-                restore_backup(bad, target)
-            self.assertFalse(target.exists())
-            self.assertEqual(list(self.tmp.glob(target.name + ".restoring-*")), [])
+        cases = {
+            "checksum": self._rewrite(lambda n, d: (n, d[:-1] + b"x") if n.endswith(".png") else (n, d), "damaged"),
+            "incomplete": self._rewrite(lambda n, d: None if n == "desk.sqlite" else (n, d), "missing"),
+            "unsafe": self._forge("unsafe", rename={"projects.json": "attachments/../../evil.txt"}),
+            "unsafe or unexpected": self._forge("device", rename={"projects.json": "attachments/NUL"}),
+            "no database": self._forge("nodb", manifest=lambda m: m.update(
+                files=[f for f in m["files"] if f["path"] != "desk.sqlite"])),
+            "listed size": self._forge("size", manifest=lambda m: [f.update(size=f["size"] - 1)
+                                                                    for f in m["files"] if f["path"].endswith(".png")]),
+            "schema 99": self._forge("schema", db_sql="UPDATE meta SET value='99' WHERE key='schema'"),
+            "outside the desk": self._forge("traversal", db_sql="UPDATE attachments SET stored_path='../../x.txt'"),
+            "damaged manifest": self._forge("shape", manifest=lambda m: m.update(files="nope")),
+            "newer Pair Desk": self._forge("format", manifest=lambda m: m.update(format_version="x")),
+        }
+        for msg, bad in cases.items():
+            for target, replace in ((self.tmp / f"target-{bad.stem}", False), (self.tmp / f"full-{bad.stem}", True)):
+                if replace:
+                    with Store(target) as s:
+                        s.create_project("keepme", "Keep me", "KM")
+                with self.subTest(msg=msg, replace=replace), self.assertRaisesRegex(BackupError, msg):
+                    restore_backup(bad, target, replace=replace)
+                self.assertEqual(target.exists(), replace)
+                if replace:
+                    with Store(target) as s:
+                        self.assertEqual([p["slug"] for p in s.list_projects()], ["keepme"])
+                self.assertEqual([p.name for p in self.tmp.glob(target.name + ".*")], [])
         self.assertFalse((self.tmp / "evil.txt").exists())
+
+    def test_a_desk_in_use_blocks_replace(self):
+        create_backup(self.data, self.zip)
+        with self.assertRaisesRegex(BackupError, "in use"):
+            restore_backup(self.zip, self.data, replace=True)  # self.store has it open
+        self.store.close()
+        out = restore_backup(self.zip, self.data, replace=True)
+        self.assertTrue(out["previous"])
+        self.store = Store(self.data)
+
+    def test_check_verifies_checksums(self):
+        create_backup(self.data, self.zip)
+        self.assertEqual(check_backup(self.zip)["counts"]["issues"], 1)
+        damaged = self._rewrite(lambda n, d: (n, d[:-1] + b"x") if n.endswith(".png") else (n, d), "damaged")
+        with self.assertRaisesRegex(BackupError, "checksum"):
+            check_backup(damaged)
 
     def test_newer_backups_and_other_zips_are_refused(self):
         create_backup(self.data, self.zip)
