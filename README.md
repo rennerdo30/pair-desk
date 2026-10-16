@@ -163,9 +163,13 @@ stemmed (`worker` finds `workers`), every word must match, `"quoted words"` matc
 `word*` matches a prefix. Results rank best first: a hit in the title counts most, then the details
 (id, area, tags, ref, milestone, place and commands), the body, and comments least; words side by
 side rank above words apart. Each ranked result names the field that matched with a short excerpt.
-When no issue has the whole words, they match as prefixes, and then as plain substrings (`mode:
-"substring"`, unranked), which also finds part of a code name (`Store` in `WorldStore`). The index
-holds copies only: a SQLite without FTS5 searches substrings and the next open with FTS5 rebuilds it.
+When no issue has the whole words, or the filters leave none of them, words match as prefixes and then
+as plain substrings (`mode: "substring"`, unranked), which also finds part of a code name (`Store` in
+`WorldStore`). The index holds copies only. Every Python that opens the desk should have FTS5 in its
+SQLite (the python.org, Homebrew and common Linux builds do): an open without it drops the index
+triggers so its writes still work, every process then searches substrings, and the next open with
+FTS5 rebuilds the index. Until that process exits, an FTS5 open in the meantime would put the
+triggers back and fail its writes.
 
 **Backup:** stop the desk (or make sure nothing is writing) and copy the whole folder; restore by
 copying it back. `python desk.py export --project mygame --out mygame.json` writes a readable JSON

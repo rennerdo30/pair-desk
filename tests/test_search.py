@@ -97,13 +97,35 @@ class SearchTests(StoreCase):
         self.assertEqual(ids(self.search(q="lighthouse")), [])
 
     def test_query_syntax_never_errors(self):
-        for q in ['"', 'a AND', 'NEAR(', '*', '-x', '%', 'worker OR', '(', "SAVE_QUIT", "^col:x", "''"]:
+        for q in ['"', 'a AND', 'NEAR(', '*', '-x', '%', 'worker OR', '(', "SAVE_QUIT", "^col:x", "''",
+                  "worker\x00", "\x00", "worker _", "-_-"]:
             with self.subTest(q=q):
                 self.assertIn("issues", self.search(q=q))
+        self.assertEqual(ids(self.search(q="worker\x00")), ["MG-1", "MG-2", "MG-3"])
+        self.assertEqual(ids(self.search(q="worker _")), ["MG-1", "MG-2", "MG-3"])
+
+    def test_filtered_out_word_hits_do_not_hide_substring_hits(self):
+        s = self.store
+        s.create_issue("mygame", {"title": "Store closed thing", "status": "closed"})  # MG-5
+        s.create_issue("mygame", {"title": "WorldStore crash", "status": "open"})  # MG-6
+        res = self.search(q="store", status="open")
+        self.assertEqual((ids(res), res["search"]), (["MG-6"], {"mode": "substring"}))
+        res = self.search(q="store", status="closed")
+        self.assertEqual((ids(res), res["search"]), (["MG-5"], {"mode": "ranked"}))
+
+    def test_stale_index_is_not_used(self):
+        conn = sqlite3.connect(self.store.db_path)
+        conn.execute("UPDATE meta SET value='stale' WHERE key='search_index'")
+        conn.commit()
+        conn.close()
+        res = self.search(q="workers")
+        self.assertEqual(res["search"], {"mode": "substring"})
+        self.assertEqual(ids(res), ["MG-2"])
 
     def test_terms_and_query(self):
         self.assertEqual(search_terms('frame "worker pool" drop* -- %'),
                          [("frame", False), ("worker pool", False), ("drop", True)])
+        self.assertEqual(search_terms('"frame dr"* _ a\x00b'), [("frame dr", True), ("ab", False)])
         self.assertEqual(fts_query([("say \"hi\"", False), ("dro", True)]), '"say ""hi""" AND "dro"*')
         self.assertEqual(fts_query([("a", False)], prefix_all=True), '"a"*')
         self.assertEqual(fts_query([("frame", False), ("drop", False)]), '("frame" AND "drop") OR "frame drop"')

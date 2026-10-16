@@ -244,18 +244,22 @@ SEARCH_TRIGGERS = (
     + _search_refresh("old.issue_id") + " " + _search_refresh("new.issue_id") + " END",
 )
 SEARCH_TRIGGER_NAMES = tuple(sql.split()[2] for sql in SEARCH_TRIGGERS)
-_SEARCH_TERM = re.compile(r'"([^"]*)"|(\S+)')
+_SEARCH_TERM = re.compile(r'"([^"]*)"(\*?)|(\S+)')
 
 
 def search_terms(q: str) -> list[tuple[str, bool]]:
     """The query's terms as (text, prefix): words, or "quoted phrases"; a trailing * asks for a prefix
-    match. Terms without a letter or digit are dropped (the index has no tokens for them)."""
+    match. Control characters are dropped, and so are terms without a letter or digit (the index has
+    no tokens for them; `_` is a separator there)."""
     out = []
-    for m in _SEARCH_TERM.finditer(q or ""):
-        text = m.group(1) if m.group(1) is not None else m.group(2)
-        prefix = text.endswith("*")
-        text = text.rstrip("*").strip()
-        if re.search(r"\w", text):
+    for m in _SEARCH_TERM.finditer("".join(ch for ch in (q or "") if ch.isprintable() or ch.isspace())):
+        if m.group(1) is not None:
+            text, prefix = m.group(1), bool(m.group(2))
+        else:
+            text = m.group(3)
+            prefix = text.endswith("*")
+        text = text.strip().rstrip("*").strip()
+        if re.search(r"[^\W_]", text):
             out.append((text, prefix))
     return out
 
@@ -945,8 +949,16 @@ class Store:
             have = {r[0] for r in conn.execute(
                 "SELECT name FROM sqlite_master WHERE name='issue_search' OR type='trigger' AND name LIKE 'issue_search_%'")}
             marker = conn.execute("SELECT value FROM meta WHERE key='search_index'").fetchone()
-            return ({"issue_search", *SEARCH_TRIGGER_NAMES} <= have
-                    and marker is not None and marker[0] == SEARCH_INDEX_VERSION)
+            if not ({"issue_search", *SEARCH_TRIGGER_NAMES} <= have
+                    and marker is not None and marker[0] == SEARCH_INDEX_VERSION):
+                return False
+            try:
+                # Another process may have built it: this SQLite must have FTS5 too, or the
+                # triggers would fail every write here.
+                conn.execute("SELECT 1 FROM issue_search LIMIT 0").fetchall()
+            except sqlite3.OperationalError:
+                return False
+            return True
 
         with self._lock:
             if current(self.conn):
@@ -1604,16 +1616,24 @@ class Store:
             return None
         weights = ", ".join(str(w) for w in SEARCH_WEIGHTS)
         boost = str(boost_area or "").strip().lower()
-        for prefix_all in (False, True):
-            match = fts_query(terms, prefix_all)
-            rows = self._read(
-                f"SELECT s.rowid id FROM issue_search s JOIN issues i ON i.id=s.rowid"
-                f" WHERE issue_search MATCH ? AND i.project_id=?"
-                f" ORDER BY bm25(issue_search, {weights}) * (CASE WHEN ?<>'' AND lower(i.area)=? THEN ? ELSE 1 END),"
-                f" i.updated_at DESC",
-                (match, project_id, boost, boost, SEARCH_AREA_BOOST))
-            if rows:
-                return [r["id"] for r in rows], match
+        try:
+            # A process without FTS5 that opened the desk since drops the triggers and marks the index
+            # stale; it stays out of use until an open with FTS5 rebuilds it.
+            marker = self._read("SELECT value FROM meta WHERE key='search_index'")
+            if not marker or marker[0]["value"] != SEARCH_INDEX_VERSION:
+                return None
+            for prefix_all in (False, True):
+                match = fts_query(terms, prefix_all)
+                rows = self._read(
+                    f"SELECT s.rowid id FROM issue_search s JOIN issues i ON i.id=s.rowid"
+                    f" WHERE issue_search MATCH ? AND i.project_id=?"
+                    f" ORDER BY bm25(issue_search, {weights}) * (CASE WHEN ?<>'' AND lower(i.area)=? THEN ? ELSE 1 END),"
+                    f" i.updated_at DESC",
+                    (match, project_id, boost, boost, SEARCH_AREA_BOOST))
+                if rows:
+                    return [r["id"] for r in rows], match
+        except sqlite3.OperationalError:
+            return None  # the index is unusable here; the substring search still works
         return None
 
     def _excerpts(self, match: str, ids: list[int]) -> dict[int, dict]:
@@ -1624,8 +1644,12 @@ class Store:
         cols = ", ".join(f"snippet(issue_search, {n}, char(1), char(2), '…', 16)" + f" c{n}"
                          for n in range(len(SEARCH_COLUMNS)))
         out = {}
-        for r in self._read(f"SELECT rowid id, {cols} FROM issue_search WHERE issue_search MATCH ?"
-                            f" AND rowid IN (SELECT value FROM json_each(?))", (match, json.dumps(ids))):
+        try:
+            rows = self._read(f"SELECT rowid id, {cols} FROM issue_search WHERE issue_search MATCH ?"
+                              f" AND rowid IN (SELECT value FROM json_each(?))", (match, json.dumps(ids)))
+        except sqlite3.OperationalError:
+            return out
+        for r in rows:
             for n in (0, 2, 1, 3):
                 text = r[f"c{n}"] or ""
                 if "\x01" in text:
@@ -1674,13 +1698,13 @@ class Store:
         where, params = self._facet_where(pid, filters)
         cw, cp = self._facet_where(pid, common)
         ranked = self._ranked_ids(pid, q, str(filters.get("boost_area") or "")) if q else None
-        search = {"mode": "ranked" if ranked else "substring"} if q else None
         rank_join, rank_params = "", []
         order = self.SORTS[sort] + ", i.number DESC"
         if q:
             # Search historical text once for both the page and facets. Bind the narrow
             # id set as one JSON parameter: no temporary writes on query-only readers,
             # and no SQLite host-parameter limit when a large project matches.
+            matches = None
             if ranked:
                 # The index found the text; the other common filters (source, tag, ref, since) narrow it.
                 plain = {k: v for k, v in common.items() if k != "q"}
@@ -1688,8 +1712,16 @@ class Store:
                 allowed = {r["id"] for r in self._read(
                     "SELECT i.id FROM issues i JOIN projects p ON p.id=i.project_id WHERE " + pw
                     + " AND i.id IN (SELECT value FROM json_each(?))", pp + [json.dumps(ranked[0])])}
-                matches = json.dumps([i for i in ranked[0] if i in allowed])
-            else:
+                kept = json.dumps([i for i in ranked[0] if i in allowed])
+                # Whole-word hits that the filters all remove (a closed "store" when listing open
+                # issues) must not hide substring hits the filters keep (an open "WorldStore").
+                vw, vp = self._facet_where(pid, varying)
+                if self._read("SELECT 1 FROM issues i JOIN projects p ON p.id=i.project_id WHERE " + vw
+                              + " AND i.id IN (SELECT value FROM json_each(?)) LIMIT 1", vp + [kept]):
+                    matches = kept
+                else:
+                    ranked = None
+            if matches is None:
                 matches = json.dumps([r["id"] for r in self._read(
                     "SELECT i.id FROM issues i JOIN projects p ON p.id=i.project_id WHERE " + cw, cp)])
             membership = " AND i.id IN (SELECT value FROM json_each(?))"
@@ -1701,6 +1733,7 @@ class Store:
                 # json_each keys are the positions in the best-first list.
                 rank_join, rank_params = " JOIN json_each(?) rk ON rk.value=i.id", [matches]
                 order = "rk.key"
+        search = {"mode": "ranked" if ranked else "substring"} if q else None
         base = "FROM issues i JOIN projects p ON p.id=i.project_id" + rank_join + " WHERE " + where
         # Sort/page narrow ids FIRST. SQLite otherwise evaluates correlated counts for many
         # rows that the LIMIT later discards, and sorts full bodies/plans in its temp b-tree.
