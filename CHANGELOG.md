@@ -6,6 +6,15 @@ and the project uses [Semantic Versioning](https://semver.org/). The version liv
 
 ## [Unreleased]
 
+### Added
+
+- Whole-desk backup and restore. `pair-desk backup` writes the database (a consistent copy taken while
+  the desk runs), every attachment file and the repo links to one zip with a manifest of counts and
+  checksums. `pair-desk restore` checks the manifest, checksums and database first, refuses backups
+  from a newer version, and never overwrites: a desk already there needs `--replace` and is moved to
+  `<data>.before-restore-<time>`. Restore lists repo links whose folders are missing, for moving a
+  desk to another machine.
+
 ## [1.10.0] - 2026-10-17
 
 ### Added

@@ -171,9 +171,23 @@ triggers so its writes still work, every process then searches substrings, and t
 FTS5 rebuilds the index. Until that process exits, an FTS5 open in the meantime would put the
 triggers back and fail its writes.
 
-**Backup:** stop the desk (or make sure nothing is writing) and copy the whole folder; restore by
-copying it back. `python desk.py export --project mygame --out mygame.json` writes a readable JSON
-export (attachments as metadata; the files are in the folder).
+**Backup and moving the desk:** `pair-desk backup [--out file.zip]` writes the whole desk to one zip
+while it keeps running: a consistent copy of the database (SQLite online backup), every attachment
+file and the repo links (`projects.json`), with a manifest of counts and checksums. The default is
+`<data>/backups/pair-desk-<time>.zip`; keep a copy on another disk or machine. The search index is
+left out and rebuilt on the first open. Screenshots are stored as they are, so the zip is about the
+size of the attachments folder.
+
+`pair-desk restore file.zip` checks the manifest, every checksum and the database before it changes
+anything, and refuses a backup from a newer Pair Desk. It restores into an empty data folder; a folder
+that already has a desk needs `--replace`, which moves it to `<data>.before-restore-<time>` (never
+deleted) and refuses while a desk started with `serve --detach` runs there. Stop the desk and close
+agent sessions on that folder first. `--check` only checks the file. To move a desk to another
+machine: `backup`, copy the zip, `restore` there (it lists repo links whose folders do not exist
+there; link them again with `pair-desk link`), then `pair-desk install`.
+
+`python desk.py export --project mygame --out mygame.json` writes one project as readable JSON
+(attachments as metadata).
 
 ## Running the server
 
@@ -629,6 +643,8 @@ python desk.py suggest-groups [--project mygame] [--json]
 python desk.py handoff [show] [--version N] | handoff set --file HANDOFF.md [--note "..."]
 python desk.py handoff section --section "Next step" --text "..." | handoff history | handoff diff --version 3 [--to 5]
 python desk.py export --project mygame [--out file.json]
+python desk.py backup [--out file.zip]
+python desk.py restore file.zip [--replace] [--check]
 python desk.py install|update|uninstall [claude codex opencode antigravity muse] [--yes] [--dry-run] [--link SLUG]   # see Install
 ```
 
