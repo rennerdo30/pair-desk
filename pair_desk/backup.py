@@ -323,6 +323,15 @@ def _database_in_use(data_dir: Path) -> bool:
     return wal and Path(str(db) + "-wal").exists()
 
 
+def _ensure_idle(data_dir: Path) -> None:
+    pid = _server_running(data_dir)
+    if pid:
+        raise BackupError(f"the desk on {data_dir} is running (pid {pid}); stop it first (pair-desk stop)")
+    if _database_in_use(data_dir):
+        raise BackupError(f"the desk on {data_dir} is in use (the web server, or an agent session's MCP server "
+                          f"or hook); stop the desk and close those sessions, then try again")
+
+
 def _has_data(data_dir: Path) -> bool:
     return data_dir.is_dir() and any(data_dir.iterdir())
 
@@ -352,12 +361,7 @@ def restore_backup(zip_path: Path, data_dir: Path, replace: bool = False, now: _
         if not replace:
             raise BackupError(f"{data_dir} already has a desk. Restore into an empty folder (--data), or pass "
                               f"--replace to move the current one aside first")
-        pid = _server_running(data_dir)
-        if pid:
-            raise BackupError(f"the desk on {data_dir} is running (pid {pid}); stop it first (pair-desk stop)")
-        if _database_in_use(data_dir):
-            raise BackupError(f"the desk on {data_dir} is in use (the web server, or an agent session's MCP server "
-                              f"or hook); stop the desk and close those sessions, then try again")
+        _ensure_idle(data_dir)  # early, for a fast refusal
     stamp = _stamp(now)
     data_dir.parent.mkdir(parents=True, exist_ok=True)
     staging = _free_name(data_dir, "restoring", stamp)
@@ -374,6 +378,9 @@ def restore_backup(zip_path: Path, data_dir: Path, replace: bool = False, now: _
             pass
         if data_dir.exists():
             if _has_data(data_dir):
+                # Again: unpacking and checking a large backup takes minutes, and a session may have
+                # opened the desk meanwhile (on POSIX the move would succeed and strand its writes).
+                _ensure_idle(data_dir)
                 previous = _free_name(data_dir, "before-restore", stamp)
                 try:
                     os.replace(data_dir, previous)
