@@ -6,6 +6,8 @@ and the project uses [Semantic Versioning](https://semver.org/). The version liv
 
 ## [Unreleased]
 
+## [1.11.0] - 2026-10-17
+
 ### Added
 
 - Whole-desk backup and restore. `pair-desk backup` writes the database (a consistent copy taken while
