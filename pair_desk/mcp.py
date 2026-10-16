@@ -126,13 +126,30 @@ TOOLS: list[dict] = [
             "kind": {"type": "string", "description": "One or more of: " + ", ".join(KINDS)},
             "area": {"type": "string"},
             "priority": {"type": "string"},
-            "q": {"type": "string", "description": "Text search over titles, bodies, comments, areas, tags, refs"},
+            "q": {"type": "string", "description": "Text search over titles, bodies, comments, areas, tags, refs. "
+                                                 "Whole words, best match first; use `search` to find related work"},
             "seed": {"type": "integer", "description": "Only issues whose location is in this world seed"},
             "merged": {"type": "boolean", "description": "Only issues that were merged into another (closed, with merged_into)"},
             "since": {"type": "string"},
-            "sort": {"type": "string", "enum": ["triage", "updated", "created", "oldest", "priority", "number"]},
+            "sort": {"type": "string", "enum": ["triage", "updated", "created", "oldest", "priority", "number", "relevance"]},
             "limit": {"type": "integer", "default": 50},
             "full": {"type": "boolean", "default": False},
+        }},
+    },
+    {
+        "name": "search",
+        "description": "Find issues about a topic, best match first: earlier reports, fixes and checks about "
+                       "what you are working on (e.g. 'worker stall', 'frame time spike'). Words match whole and "
+                       "stemmed (worker finds workers); a title hit ranks above one in the body or comments. Each "
+                       "result says which field matched with a short excerpt. Closed items are included unless "
+                       "`status` narrows it. Pass `area` to rank matches in your area first.",
+        "inputSchema": {"type": "object", "required": ["q"], "properties": {
+            "project": _PROJECT,
+            "q": {"type": "string", "description": "Words to find; \"quoted phrase\" for words together, word* for a prefix"},
+            "area": {"type": "string", "description": "Rank matches in this area first (does not filter)"},
+            "status": {"type": "string", "description": "Only these statuses (comma separated)"},
+            "kind": {"type": "string", "description": "Only these kinds (comma separated)"},
+            "limit": {"type": "integer", "default": 15},
         }},
     },
     {
@@ -305,7 +322,8 @@ TOOLS: list[dict] = [
 
 def _compact(issue: dict, full: bool) -> dict:
     keys = ("id", "title", "status", "kind", "priority", "area", "tags", "size", "milestone", "source", "external_ref",
-            "parent", "merged_into", "redirected_from", "updated_at", "comment_count", "attachment_count", "last_verdict")
+            "parent", "merged_into", "redirected_from", "updated_at", "comment_count", "attachment_count", "last_verdict",
+            "match")
     out = {k: issue.get(k) for k in keys if issue.get(k) not in (None, "", [])}
     prog = issue.get("plan_progress") or {}
     if prog.get("total"):
@@ -336,6 +354,7 @@ class McpServer:
         self.handlers: dict[str, Callable[[dict], Any]] = {
             "list_projects": self.t_list_projects,
             "list_issues": self.t_list_issues,
+            "search": self.t_search,
             "get_issue": self.t_get_issue,
             "create_issue": self.t_create_issue,
             "update_issue": self.t_update_issue,
@@ -409,6 +428,18 @@ class McpServer:
         full = bool(args.get("full"))
         return {"project": res["project"], "total": res["total"], "status_counts": res["counts"]["status"],
                 "issues": [_compact(i, full) for i in res["issues"]]}
+
+    def t_search(self, args):
+        q = str(args.get("q") or "").strip()
+        if not q:
+            raise Invalid("q is required: the words to search for")
+        filters = {"q": q, "sort": "relevance", "summary": "1", "limit": max(1, min(int(args.get("limit") or 15), 100))}
+        filters.update({k: args[k] for k in ("status", "kind") if args.get(k)})
+        if args.get("area"):
+            filters["boost_area"] = args["area"]
+        res = self.store.list_issues(self._project(args), filters)
+        return {"project": res["project"], "total": res["total"], "mode": res.get("search", {}).get("mode"),
+                "issues": [_compact(i, False) for i in res["issues"]]}
 
     def t_get_issue(self, args):
         return self.store.get_issue(args["id"])
@@ -611,11 +642,11 @@ class McpServer:
         if not isinstance(args, dict):
             return {"content": [{"type": "text", "text": "arguments must be an object"}], "isError": True}
         try:
-            if name in ("list_issues", "get_issue"):
+            if name in ("list_issues", "search", "get_issue"):
                 # Reuse the JSON text, not a deserialize/compact/serialize round trip for
                 # every agent read. Resolve links before caching: repo links can change
                 # without a database commit. Writes and errors are never cached.
-                project = self._project(args) if name == "list_issues" else None
+                project = self._project(args) if name != "get_issue" else None
                 key = ("mcp", name, project, json.dumps(args, sort_keys=True, ensure_ascii=False))
                 def load():
                     with self.store._snapshot():

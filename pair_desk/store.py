@@ -201,6 +201,82 @@ PERFORMANCE_INDEXES = (
     "CREATE INDEX IF NOT EXISTS issues_children_covering ON issues(parent_id, merged_into, status)",
 )
 
+# -- search -----------------------------------------------------------------------------------
+# A full-text index (SQLite FTS5) over each issue: title, body, details (id, area, tags, ref,
+# milestone, place and commands) and all its comments as one column. Triggers keep it current for
+# every writer, older releases included; it holds copies only, so dropping it loses nothing. Bump
+# SEARCH_INDEX_VERSION when the columns or triggers change: the next open rebuilds it.
+SEARCH_INDEX_VERSION = "1"
+SEARCH_COLUMNS = ("title", "body", "details", "comments")
+# bm25 weights, in SEARCH_COLUMNS order: a title hit counts most, a comment hit least.
+SEARCH_WEIGHTS = (10.0, 2.0, 4.0, 1.0)
+# A match in the area named by `boost_area` ranks as if it scored this much more.
+SEARCH_AREA_BOOST = 1.5
+_SEARCH_ROW = """
+SELECT i.id, i.title, i.body,
+  p.prefix || '-' || i.number || ' ' || i.area || ' ' || i.external_ref || ' ' || i.milestone || ' ' ||
+  CASE WHEN json_valid(i.tags) THEN COALESCE((SELECT group_concat(value, ' ') FROM json_each(i.tags)), '') ELSE i.tags END
+  || ' ' ||
+  CASE WHEN json_valid(i.location) THEN COALESCE(json_extract(i.location, '$.place'), '') || ' ' ||
+    COALESCE(json_extract(i.location, '$.action'), '') || ' ' ||
+    COALESCE((SELECT group_concat(COALESCE(json_extract(value, '$.label'), '') || ' ' ||
+              COALESCE(json_extract(value, '$.command'), ''), ' ')
+              FROM json_each(i.location, '$.commands') WHERE json_type(value)='object'),
+             json_extract(i.location, '$.command'), '')
+  ELSE i.location END,
+  COALESCE((SELECT group_concat(cm.text, char(10)) FROM comments cm WHERE cm.issue_id=i.id), '')
+FROM issues i JOIN projects p ON p.id=i.project_id"""
+
+
+def _search_refresh(issue: str) -> str:
+    return (f"DELETE FROM issue_search WHERE rowid={issue}; "
+            f"INSERT INTO issue_search(rowid, {', '.join(SEARCH_COLUMNS)}) {_SEARCH_ROW} WHERE i.id={issue};")
+
+
+SEARCH_TRIGGERS = (
+    "CREATE TRIGGER issue_search_ai AFTER INSERT ON issues BEGIN " + _search_refresh("new.id") + " END",
+    "CREATE TRIGGER issue_search_au AFTER UPDATE OF title, body, area, tags, external_ref, milestone, location"
+    " ON issues BEGIN " + _search_refresh("new.id") + " END",
+    "CREATE TRIGGER issue_search_ad AFTER DELETE ON issues BEGIN DELETE FROM issue_search WHERE rowid=old.id; END",
+    "CREATE TRIGGER issue_search_cai AFTER INSERT ON comments BEGIN " + _search_refresh("new.issue_id") + " END",
+    "CREATE TRIGGER issue_search_cad AFTER DELETE ON comments BEGIN " + _search_refresh("old.issue_id") + " END",
+    "CREATE TRIGGER issue_search_cau AFTER UPDATE OF text, issue_id ON comments BEGIN "
+    + _search_refresh("old.issue_id") + " " + _search_refresh("new.issue_id") + " END",
+)
+SEARCH_TRIGGER_NAMES = tuple(sql.split()[2] for sql in SEARCH_TRIGGERS)
+_SEARCH_TERM = re.compile(r'"([^"]*)"(\*?)|(\S+)')
+
+
+def search_terms(q: str) -> list[tuple[str, bool]]:
+    """The query's terms as (text, prefix): words, or "quoted phrases"; a trailing * asks for a prefix
+    match. Control characters are dropped, and so are terms without a letter or digit (the index has
+    no tokens for them; `_` is a separator there)."""
+    out = []
+    for m in _SEARCH_TERM.finditer("".join(ch for ch in (q or "") if ch.isprintable() or ch.isspace())):
+        if m.group(1) is not None:
+            text, prefix = m.group(1), bool(m.group(2))
+        else:
+            text = m.group(3)
+            prefix = text.endswith("*")
+        text = text.strip().rstrip("*").strip()
+        if re.search(r"[^\W_]", text):
+            out.append((text, prefix))
+    return out
+
+
+def fts_query(terms: list[tuple[str, bool]], prefix_all: bool = False) -> str:
+    """An FTS5 query that needs every term. Each term is a quoted phrase, so its punctuation never
+    reads as query syntax (AS-12, SAVE_QUIT and "frame drop" become token sequences). Several plain
+    words also match as one phrase: that matches no extra issue, but bm25 adds its score, so issues
+    with the words side by side rank first."""
+    def quote(text: str) -> str:
+        return '"' + text.replace('"', '""') + '"'
+
+    query = " AND ".join(quote(text) + ("*" if prefix or prefix_all else "") for text, prefix in terms)
+    if len(terms) > 1 and not prefix_all and not any(prefix for _, prefix in terms):
+        query = f"({query}) OR {quote(' '.join(text for text, _ in terms))}"
+    return query
+
 # -- plans ------------------------------------------------------------------------------------
 PLAN_STATES = ("todo", "doing", "done", "dropped")
 MAX_PLAN_STEPS = 100
@@ -856,11 +932,62 @@ class Store:
                 if (getattr(e, "sqlite_errorcode", 0) & 255) == sqlite3.SQLITE_READONLY:
                     break
                 raise
+        self.search_ready = self._install_search()
         self._revision_conn = self._open_reader()
         self._data_version = None
         self._revision = 0
         self._revision_time = None
         self._cache_deadline = None
+
+    def _install_search(self) -> bool:
+        """Create or rebuild the search index; True when queries can use it.
+
+        Without FTS5 in this SQLite build the triggers are dropped (they would fail every issue write)
+        and the index is marked stale, so the next open that has FTS5 rebuilds it. A read-only open
+        uses an index that is already current and otherwise searches the old way."""
+        def current(conn) -> bool:
+            have = {r[0] for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE name='issue_search' OR type='trigger' AND name LIKE 'issue_search_%'")}
+            marker = conn.execute("SELECT value FROM meta WHERE key='search_index'").fetchone()
+            if not ({"issue_search", *SEARCH_TRIGGER_NAMES} <= have
+                    and marker is not None and marker[0] == SEARCH_INDEX_VERSION):
+                return False
+            try:
+                # Another process may have built it: this SQLite must have FTS5 too, or the
+                # triggers would fail every write here.
+                conn.execute("SELECT 1 FROM issue_search LIMIT 0").fetchall()
+            except sqlite3.OperationalError:
+                return False
+            return True
+
+        with self._lock:
+            if current(self.conn):
+                return True
+        try:
+            with self._tx() as c:
+                if current(c):
+                    return True
+                for name in SEARCH_TRIGGER_NAMES:
+                    c.execute(f"DROP TRIGGER IF EXISTS {name}")
+                try:
+                    c.execute("DROP TABLE IF EXISTS issue_search")
+                    c.execute("CREATE VIRTUAL TABLE issue_search USING fts5(" + ", ".join(SEARCH_COLUMNS)
+                              + ", tokenize='porter unicode61 remove_diacritics 2')")
+                except sqlite3.OperationalError as e:
+                    if "fts5" not in str(e):
+                        raise
+                    # No FTS5 module: nothing indexes, and no trigger may reference the table.
+                    c.execute("INSERT OR REPLACE INTO meta(key, value) VALUES ('search_index', 'stale')")
+                    return False
+                c.execute(f"INSERT INTO issue_search(rowid, {', '.join(SEARCH_COLUMNS)}) {_SEARCH_ROW}")
+                for sql in SEARCH_TRIGGERS:
+                    c.execute(sql)
+                c.execute("INSERT OR REPLACE INTO meta(key, value) VALUES ('search_index', ?)", (SEARCH_INDEX_VERSION,))
+            return True
+        except sqlite3.OperationalError as e:
+            if (getattr(e, "sqlite_errorcode", 0) & 255) == sqlite3.SQLITE_READONLY:
+                return False
+            raise
 
     def _open_reader(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path.resolve().as_uri() + "?mode=ro", uri=True,
@@ -1478,6 +1605,59 @@ class Store:
             params.extend([like] * 8)
         return " AND ".join(where), params
 
+    def _ranked_ids(self, project_id: int, q: str, boost_area: str = "") -> tuple[list[int], str] | None:
+        """The project's issues matching `q` through the search index, best first, and the FTS5 query
+        that found them (for excerpts). Every term must match as a whole word (stemmed: worker finds
+        workers); when nothing does, every term as a word prefix. None when the index is unusable or
+        neither finds anything: the caller then searches substrings, which also finds a word inside a
+        code name (Store in WorldStore)."""
+        terms = search_terms(q)
+        if not self.search_ready or not terms:
+            return None
+        weights = ", ".join(str(w) for w in SEARCH_WEIGHTS)
+        boost = str(boost_area or "").strip().lower()
+        try:
+            # A process without FTS5 that opened the desk since drops the triggers and marks the index
+            # stale; it stays out of use until an open with FTS5 rebuilds it.
+            marker = self._read("SELECT value FROM meta WHERE key='search_index'")
+            if not marker or marker[0]["value"] != SEARCH_INDEX_VERSION:
+                return None
+            for prefix_all in (False, True):
+                match = fts_query(terms, prefix_all)
+                rows = self._read(
+                    f"SELECT s.rowid id FROM issue_search s JOIN issues i ON i.id=s.rowid"
+                    f" WHERE issue_search MATCH ? AND i.project_id=?"
+                    f" ORDER BY bm25(issue_search, {weights}) * (CASE WHEN ?<>'' AND lower(i.area)=? THEN ? ELSE 1 END),"
+                    f" i.updated_at DESC",
+                    (match, project_id, boost, boost, SEARCH_AREA_BOOST))
+                if rows:
+                    return [r["id"] for r in rows], match
+        except sqlite3.OperationalError:
+            return None  # the index is unusable here; the substring search still works
+        return None
+
+    def _excerpts(self, match: str, ids: list[int]) -> dict[int, dict]:
+        """For each issue id: the field that matched best (title, details, body, comments, in that order)
+        and a short excerpt with the hits in **bold**."""
+        if not ids:
+            return {}
+        cols = ", ".join(f"snippet(issue_search, {n}, char(1), char(2), '…', 16)" + f" c{n}"
+                         for n in range(len(SEARCH_COLUMNS)))
+        out = {}
+        try:
+            rows = self._read(f"SELECT rowid id, {cols} FROM issue_search WHERE issue_search MATCH ?"
+                              f" AND rowid IN (SELECT value FROM json_each(?))", (match, json.dumps(ids)))
+        except sqlite3.OperationalError:
+            return out
+        for r in rows:
+            for n in (0, 2, 1, 3):
+                text = r[f"c{n}"] or ""
+                if "\x01" in text:
+                    out[r["id"]] = {"field": SEARCH_COLUMNS[n],
+                                    "excerpt": " ".join(text.replace("\x01", "**").replace("\x02", "**").split())}
+                    break
+        return out
+
     SORTS = {
         "triage": "CASE i.status " + " ".join(f"WHEN '{s}' THEN {n}" for n, s in enumerate(TRIAGE_ORDER))
                   + " END, i.priority, i.updated_at DESC",
@@ -1489,6 +1669,10 @@ class Store:
         # The backlog: most important first, then the smaller jobs, then grouped by area.
         "backlog": "i.priority, CASE i.size WHEN 'S' THEN 0 WHEN 'M' THEN 1 WHEN 'L' THEN 2 ELSE 3 END,"
                    " lower(i.area)='', lower(i.area), i.number",
+        # Best search match first (the default with a text query). Without a ranked match (no query,
+        # or the substring fallback) it is the triage order.
+        "relevance": "CASE i.status " + " ".join(f"WHEN '{s}' THEN {n}" for n, s in enumerate(TRIAGE_ORDER))
+                     + " END, i.priority, i.updated_at DESC",
     }
 
     @cached_read
@@ -1496,7 +1680,8 @@ class Store:
         filters = dict(filters or {})
         project = self._project_row(slug)
         pid = project["id"]
-        sort = str(filters.get("sort") or "triage")
+        q = str(filters.get("q") or "").strip()
+        sort = str(filters.get("sort") or ("relevance" if q else "triage"))
         if sort not in self.SORTS:
             raise Invalid(f"sort must be one of {', '.join(self.SORTS)}")
         try:
@@ -1512,32 +1697,58 @@ class Store:
         varying = {k: v for k, v in filters.items() if k in (*facets, "merged")}
         where, params = self._facet_where(pid, filters)
         cw, cp = self._facet_where(pid, common)
-        if str(filters.get("q") or "").strip():
+        ranked = self._ranked_ids(pid, q, str(filters.get("boost_area") or "")) if q else None
+        rank_join, rank_params = "", []
+        order = self.SORTS[sort] + ", i.number DESC"
+        if q:
             # Search historical text once for both the page and facets. Bind the narrow
             # id set as one JSON parameter: no temporary writes on query-only readers,
             # and no SQLite host-parameter limit when a large project matches.
-            matches = json.dumps([r["id"] for r in self._read(
-                "SELECT i.id FROM issues i JOIN projects p ON p.id=i.project_id WHERE " + cw, cp)])
+            matches = None
+            if ranked:
+                # The index found the text; the other common filters (source, tag, ref, since) narrow it.
+                plain = {k: v for k, v in common.items() if k != "q"}
+                pw, pp = self._facet_where(pid, plain)
+                allowed = {r["id"] for r in self._read(
+                    "SELECT i.id FROM issues i JOIN projects p ON p.id=i.project_id WHERE " + pw
+                    + " AND i.id IN (SELECT value FROM json_each(?))", pp + [json.dumps(ranked[0])])}
+                kept = json.dumps([i for i in ranked[0] if i in allowed])
+                # Whole-word hits that the filters all remove (a closed "store" when listing open
+                # issues) must not hide substring hits the filters keep (an open "WorldStore").
+                vw, vp = self._facet_where(pid, varying)
+                if self._read("SELECT 1 FROM issues i JOIN projects p ON p.id=i.project_id WHERE " + vw
+                              + " AND i.id IN (SELECT value FROM json_each(?)) LIMIT 1", vp + [kept]):
+                    matches = kept
+                else:
+                    ranked = None
+            if matches is None:
+                matches = json.dumps([r["id"] for r in self._read(
+                    "SELECT i.id FROM issues i JOIN projects p ON p.id=i.project_id WHERE " + cw, cp)])
             membership = " AND i.id IN (SELECT value FROM json_each(?))"
             where, params = self._facet_where(pid, varying)
             where += membership
             params.append(matches)
             cw, cp = "i.project_id=?" + membership, [pid, matches]
-        base = "FROM issues i JOIN projects p ON p.id=i.project_id WHERE " + where
+            if sort == "relevance" and ranked:
+                # json_each keys are the positions in the best-first list.
+                rank_join, rank_params = " JOIN json_each(?) rk ON rk.value=i.id", [matches]
+                order = "rk.key"
+        search = {"mode": "ranked" if ranked else "substring"} if q else None
+        base = "FROM issues i JOIN projects p ON p.id=i.project_id" + rank_join + " WHERE " + where
         # Sort/page narrow ids FIRST. SQLite otherwise evaluates correlated counts for many
         # rows that the LIMIT later discards, and sorts full bodies/plans in its temp b-tree.
         # Count through covering indexes for just this page. Grouped comment aggregates
         # read every historical row to inspect verdicts; their wide text pages dominate
         # cold reads during continuous writes. A separate verdict seek reads at most one.
-        order = self.SORTS[sort] + ", i.number DESC"
         # Older system SQLite libraries support CTEs but not the explicit 3.35 hint.
         # Reused CTEs still share work there; do not raise the runtime requirement.
         materialized = "MATERIALIZED " if sqlite3.sqlite_version_info >= (3, 35, 0) else ""
         columns = "i.*" if not summary else ", ".join("i." + name for name in (
             "id", "project_id", "number", "title", "kind", "status", "priority", "area", "tags", "location",
             "source", "external_ref", "size", "milestone", "build", "created_at", "updated_at", "closed_at", "plan"))
+        pos = ", rk.key pos" if rank_join else ""
         rows = self._read(
-            "WITH page AS " + materialized + "(SELECT i.id " + base + " ORDER BY " + order + " LIMIT ? OFFSET ?)"
+            "WITH page AS " + materialized + "(SELECT i.id" + pos + " " + base + " ORDER BY " + order + " LIMIT ? OFFSET ?)"
             " SELECT " + columns + ", p.prefix, p.slug, par.number parent_number, merged.number merged_number,"
             " (SELECT COUNT(*) FROM comments c WHERE c.issue_id=i.id) comment_count,"
             " (SELECT COUNT(*) FROM attachments a WHERE a.issue_id=i.id) attachment_count,"
@@ -1546,8 +1757,8 @@ class Store:
             " (SELECT COUNT(*) FROM issues c WHERE c.parent_id=i.id AND c.merged_into IS NULL AND c.status IN ('passed','closed')) child_done"
             " FROM page JOIN issues i ON i.id=page.id JOIN projects p ON p.id=i.project_id"
             " LEFT JOIN issues par ON par.id=i.parent_id LEFT JOIN issues merged ON merged.id=i.merged_into"
-            " ORDER BY " + order,
-            params + [limit, offset])
+            " ORDER BY " + ("page.pos" if rank_join else order),
+            rank_params + params + [limit, offset])
         # Search/source/tag/ref/since apply to every facet. Evaluate them once instead of
         # rescanning issue bodies and comments eight times. Each facet still ignores ONLY
         # its own filter (and merged counts retain their special status/merged semantics).
@@ -1585,14 +1796,24 @@ class Store:
                     counts[facet][str(value)] = r["n"]
             elif facet not in ("size", "milestone") or value:
                 counts[facet][value] = r["n"]
-        return {
+        issues = [self._issue_dict(r, summary=summary) for r in rows]
+        if ranked:
+            found = self._excerpts(ranked[1], [r["id"] for r in rows])
+            for issue, r in zip(issues, rows):
+                if r["id"] in found:
+                    issue["match"] = found[r["id"]]
+        out = {
             "project": project["slug"],
             "total": total,
             "limit": limit,
             "offset": offset,
-            "issues": [self._issue_dict(r, summary=summary) for r in rows],
+            "issues": issues,
             "counts": counts,
         }
+        if search:
+            # ranked: whole-word index matches; substring: the plain fallback (no index or no word hit).
+            out["search"] = search
+        return out
 
     @cached_read
     def get_issue(self, key: str, full: bool = True, follow: bool = True) -> dict:

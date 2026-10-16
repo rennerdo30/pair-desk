@@ -46,6 +46,9 @@ Use update_issue to clarify an owner's short report: title, body, kind, priority
    - The backlog is `list_issues` with `status: "open,in_progress"` and `sort: "backlog"`
      (priority, then size, then area). `parked` items are not now; leave them.
    - `to_check` items are waiting for the owner. Do not touch them unless you changed that code again.
+   - Before you dig into a bug or a measurement, `search` the desk for it (`q: "worker stall"`,
+     `area` = the area you work in): earlier reports, fixes, measurements and dead ends, best match
+     first, each with the field that matched and an excerpt. Closed items are included.
 
 2. **Plan before code.** Before you change code for an issue, write its plan with `set_plan`:
    ordered, concrete steps (each one a commit or a check you can tick) and a `verification`

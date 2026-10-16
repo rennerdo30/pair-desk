@@ -6,6 +6,16 @@ and the project uses [Semantic Versioning](https://semver.org/). The version liv
 
 ## [Unreleased]
 
+### Added
+
+- Ranked full-text search. `q` now uses a SQLite FTS5 index (built on first open, kept current by
+  triggers): whole, stemmed words (`worker` finds `workers`, `drop` no longer finds `Dropdown`),
+  best match first with title hits above details, body and comments, and words side by side first.
+  Ranked results carry `match: {field, excerpt}`. When no whole word matches, words match as
+  prefixes, then as substrings as before. New MCP tool `search` (15 results, `area` ranks your area
+  first); `list_issues`, the API and `list --q` default to `sort=relevance` with a query, and take
+  `boost_area`. The web search box keeps its chosen order and gains the new matching.
+
 ## [1.9.0] - 2026-10-15
 
 ### Changed
