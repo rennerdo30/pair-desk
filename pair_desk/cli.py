@@ -376,7 +376,7 @@ def cmd_link(args, store: Store) -> int:
 
 def cmd_list(args, store: Store) -> int:
     filters = {k: getattr(args, k) for k in ("status", "kind", "area", "priority", "q", "since", "sort", "limit", "tag",
-                                             "size", "milestone") if getattr(args, k, None)}
+                                             "size", "milestone", "boost_area") if getattr(args, k, None)}
     if args.seed is not None:
         filters["seed"] = args.seed
     res = store.list_issues(_project(args, store), filters)
@@ -390,6 +390,8 @@ def cmd_list(args, store: Store) -> int:
         part = f" (part of {i['parent']})" if i.get("parent") else ""
         print(f"{i['id']:<9} {STATUS_LABEL[i['status']]:<12} {i['priority']} {(i.get('size') or '-'):<1} {i['kind']:<6} "
               f"{(i['area'] or '-')[:16]:<16} {i['title']}{verdict}{plan}{part}")
+        if i.get("match") and i["match"]["field"] != "title":
+            print(f"{'':<9} {i['match']['field']}: {i['match']['excerpt']}")
     shown = len(res["issues"])
     print(f"-- {shown} of {res['total']}" if res["total"] > shown else f"-- {res['total']} issues")
     return 0
@@ -1001,7 +1003,9 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--seed", help="only issues whose location is in this world seed")
     s.add_argument("--q", "--search", dest="q")
     s.add_argument("--since", help="ISO time; updated at or after")
-    s.add_argument("--sort", choices=["triage", "updated", "created", "oldest", "priority", "number", "backlog"])
+    s.add_argument("--sort", choices=["triage", "updated", "created", "oldest", "priority", "number", "backlog", "relevance"],
+                   help="default: relevance with --q, else triage")
+    s.add_argument("--boost-area", dest="boost_area", help="with --q: rank matches in this area first")
     s.add_argument("--size", help="S, M, L or none (comma separated for several)")
     s.add_argument("--milestone")
     s.add_argument("--limit", type=int)

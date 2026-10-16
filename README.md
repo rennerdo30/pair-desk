@@ -151,11 +151,21 @@ environment variable.
 
 | file | what |
 |---|---|
-| `desk.sqlite` (+ `-wal`, `-shm`) | projects, issues, comments, activity, plans, handoffs, command queue |
+| `desk.sqlite` (+ `-wal`, `-shm`) | projects, issues, comments, activity, plans, handoffs, command queue, the search index |
 | `attachments/<project>/<yyyy-mm>/` | uploaded files, named by random id |
 | `projects.json` | optional repo-path → project links (see *Linking a repo*) |
 | `notify-cursors.json`, `channels/` | what each agent session has already been told |
 | `server.log`, `server.pid` | only when started with `--detach` |
+
+**Search:** `q` (web search box, `list_issues`, the MCP `search` tool, `list --q`) uses a full-text
+index (SQLite FTS5, built on first open and kept current by triggers). Words match whole and
+stemmed (`worker` finds `workers`), every word must match, `"quoted words"` match together and
+`word*` matches a prefix. Results rank best first: a hit in the title counts most, then the details
+(id, area, tags, ref, milestone, place and commands), the body, and comments least; words side by
+side rank above words apart. Each ranked result names the field that matched with a short excerpt.
+When no issue has the whole words, they match as prefixes, and then as plain substrings (`mode:
+"substring"`, unranked), which also finds part of a code name (`Store` in `WorldStore`). The index
+holds copies only: a SQLite without FTS5 searches substrings and the next open with FTS5 rebuilds it.
 
 **Backup:** stop the desk (or make sure nothing is writing) and copy the whole folder; restore by
 copying it back. `python desk.py export --project mygame --out mygame.json` writes a readable JSON
@@ -337,7 +347,7 @@ browser `Origin` other than `http://127.0.0.1[:port]`, `http://localhost[:port]`
 | `DELETE /api/projects/{slug}/build` | no current build (`?off=1`: stop using builds) → `{project, build, builds_enabled}` |
 | `POST /api/projects/{slug}/build/open`, `.../build/run` | reveal the current build in the file manager, or start it (detached, in its own folder, no shell, no arguments) → `{ok, action, path, folder \| started}`. Acts only on the stored path (the body is ignored); 409 when the path is not on this machine, or for `run` a folder or not an executable. Needs the page's `X-Pair-Desk-Token`, a loopback client and a same-origin request, else 403. The build in `GET /api/projects/{slug}` and `GET /api/issues/{id}` carries `local: {exists, kind, open, run}`. |
 | `POST /api/issues/{id}/build/open`, `.../build/run` | the same for the build stamped on the issue |
-| `GET /api/projects/{slug}/issues` | filters: `status`, `kind`, `priority`, `area`, `source`, `milestone`, `size` (`S`, `M`, `L`, `none`) (each comma separated for several), `tag`, `q`, `since` (updated at or after, ISO), `external_ref`, `seed` (location world seed), `merged` (`1`: only issues merged into another), `sort` (`triage` default, `updated`, `created`, `oldest`, `priority`, `number`, `backlog`: priority, size, area), `limit` (default 500, max 5000), `offset`. Returns `{project, total, limit, offset, issues, counts: {status, kind, priority, area, seed, size, milestone}}`; each count ignores its own filter so chips show what selecting them would give. Optional `summary=1` omits issue `body` and full `plan`, keeping `plan_progress` and all other metadata; the default response is unchanged. |
+| `GET /api/projects/{slug}/issues` | filters: `status`, `kind`, `priority`, `area`, `source`, `milestone`, `size` (`S`, `M`, `L`, `none`) (each comma separated for several), `tag`, `q` (text search, see *Search*), `boost_area` (with `q`: rank matches in this area first), `since` (updated at or after, ISO), `external_ref`, `seed` (location world seed), `merged` (`1`: only issues merged into another), `sort` (`triage` default, or `relevance` by default with `q`; `updated`, `created`, `oldest`, `priority`, `number`, `backlog`: priority, size, area), `limit` (default 500, max 5000), `offset`. Returns `{project, total, limit, offset, issues, counts: {status, kind, priority, area, seed, size, milestone}}`; each count ignores its own filter so chips show what selecting them would give. Optional `summary=1` omits issue `body` and full `plan`, keeping `plan_progress` and all other metadata; the default response is unchanged. With `q` the response also has `search: {mode}` (`ranked` or `substring`), and ranked issues carry `match: {field, excerpt}`. |
 | `POST /api/projects/{slug}/issues` | issue fields (`commands` is shorthand for `location.commands`, `command` for its first entry), plus `author` and `attachments: [{filename, mime, data_base64}]` → the full issue (201) |
 | `GET /api/issues/{id}` | issue plus `comments` (with their attachments), `attachments`, `activity`, `commands` (last 10 sent for it) |
 | `PATCH /api/issues/{id}` | any issue fields, plus `actor` for the activity entry. `commands` replaces the location's command list; `command` replaces its first entry (empty text removes it). |
@@ -389,7 +399,8 @@ prompt hook do not.
 What it adds:
 
 - **MCP server `pair-desk`** (stdio, declared in `.claude-plugin/plugin.json` and launched as `bin/pair-desk mcp`;
-  same data folder as the web UI). Tools: `list_projects`, `list_issues`, `get_issue` (follows merge
+  same data folder as the web UI). Tools: `list_projects`, `list_issues`, `search(q, area?, status?, kind?, limit?)`
+  (ranked full-text search with the matching field and an excerpt per result; see *Search*), `get_issue` (follows merge
   redirects), `update_issue` (title, body, kind, priority, area, tags, size, milestone, location/commands; keeps owner wording in activity; status uses `set_status`), `create_issue` (defaults for agents: kind `check`, status `to_check`, source `agent`;
   takes `size`, `milestone` and `commands`), `comment`, `set_status`, `set_location` (`commands` replaces the list, a
   lone `command` the first entry), `set_build(path, commit?, label?, built_at?)` (publishes the current build and

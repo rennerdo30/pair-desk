@@ -164,7 +164,7 @@ class McpTests(McpCase):
         self.assertEqual(sorted(t["name"] for t in tools), sorted([
             "list_projects", "list_issues", "get_issue", "create_issue", "update_issue", "comment", "set_status", "set_location", "set_build",
             "queue_command", "import_checks", "set_plan", "update_step", "progress", "link_parent",
-            "merge_issues", "unmerge", "suggest_groups", "get_handoff", "set_handoff", "update_handoff"]))
+            "merge_issues", "unmerge", "suggest_groups", "get_handoff", "set_handoff", "update_handoff", "search"]))
         for t in tools:
             self.assertEqual(t["inputSchema"]["type"], "object")
 
