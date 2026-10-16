@@ -6,6 +6,8 @@ and the project uses [Semantic Versioning](https://semver.org/). The version liv
 
 ## [Unreleased]
 
+## [1.10.0] - 2026-10-17
+
 ### Added
 
 - Ranked full-text search. `q` now uses a SQLite FTS5 index (built on first open, kept current by
