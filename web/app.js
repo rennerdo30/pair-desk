@@ -262,6 +262,35 @@ function buildHtml(i) {
   </section>`;
 }
 
+/** Plain Markdown context for pasting an entry into a coding agent. */
+function issuePrompt(i, project, origin) {
+  const slug = project?.slug || i.project || "";
+  const parts = [
+    `Please work on this Pair Desk entry. Read the repository rules and check the current state before making changes.`,
+    `# ${i.id}: ${i.title}`,
+    `Project: ${project?.name || slug}\nEntry: ${origin}/#/${slug}/${i.id}\nStatus: ${i.status}\nKind: ${i.kind}\nPriority: ${i.priority}`,
+  ];
+  const fields = ["area", "milestone", "size", "external_ref", "parent", "merged_into"];
+  const metadata = fields.filter((k) => i[k]).map((k) => `${k}: ${i[k]}`);
+  if (i.tags?.length) metadata.push(`Tags: ${i.tags.join(", ")}`);
+  if (metadata.length) parts.push(metadata.join("\n"));
+  if (i.body?.trim()) parts.push(`## Description\n${i.body}`);
+  if (i.plan?.steps?.length) parts.push(`## Plan\n${i.plan.steps.map((s) => `- [${s.state}] ${s.text}${s.commit ? ` (commit ${s.commit})` : ""}${s.note ? `\n  ${s.note}` : ""}`).join("\n")}`);
+  if (i.plan?.verification) parts.push(`## Verification\n${i.plan.verification}`);
+  const commands = gameCommands(i.location);
+  const facts = Object.entries(i.location || {}).filter(([k, v]) => !["command", "commands"].includes(k) && v !== null && v !== "");
+  if (commands.length || facts.length) parts.push(`## Location\n${[...commands.map((c) => `${c.label ? `${c.label}: ` : ""}${c.command}`), ...facts.map(([k, v]) => `${k}: ${typeof v === "object" ? JSON.stringify(v) : v}`)].join("\n")}`);
+  if (i.build) parts.push(`## Build\n${[i.build.label, i.build.path, i.build.commit].filter(Boolean).join("\n")}`);
+  if (i.comments?.length) parts.push(`## Comments\n${i.comments.map((c) => `### ${c.author} · ${c.created_at}${c.verdict ? ` · ${c.verdict}` : ""}\n${c.text || ""}`).join("\n\n")}`);
+  const attachments = new Map();
+  for (const a of [...(i.attachments || []), ...(i.comments || []).flatMap((c) => c.attachments || [])]) {
+    if (a.url) attachments.set(a.url, `${a.filename}: ${new URL(a.url, origin).href}`);
+  }
+  if (attachments.size) parts.push(`## Attachments\n${[...attachments.values()].join("\n")}\nThese are local desk links; open them where the desk is reachable.`);
+  parts.push("Report what changed, what you verified, and anything still unverified. Keep the entry updated; leave the owner's verdict to the owner.");
+  return parts.join("\n\n");
+}
+
 async function copyText(text, label = "Copied") {
   try {
     await navigator.clipboard.writeText(text);
@@ -1166,6 +1195,7 @@ function detailHtml(i) {
       </select>
       <button class="btn btn-quiet btn-sm row-id" data-act="copy-id" title="Copy id">${esc(i.id)}</button>
       <span class="head-spacer"></span>
+      <button class="btn btn-sm" data-act="copy-prompt" title="Copy entry details as a prompt">${ICON.copy}Copy as prompt</button>
       <button class="icon-btn" data-act="copy-link" title="Copy link">${ICON.link}</button>
       <button class="icon-btn" data-act="delete" title="Delete issue">${ICON.trash}</button>
       <button class="icon-btn" data-act="close" title="Close (Esc)" aria-label="Close">${ICON.close}</button>
@@ -2043,6 +2073,7 @@ function bindEvents() {
           .then((d) => { S.handoff.diff = d.diff || "(no differences)"; renderHandoff(); }).catch(fail);
         break;
       case "copy-id": copyText(i.id, `Copied ${i.id}`); break;
+      case "copy-prompt": copyText(issuePrompt(i, { ...S.project, slug: S.slug }, location.origin), "Prompt copied"); break;
       case "copy-link": copyText(`${location.origin}/#/${S.slug}/${i.id}`, "Link copied"); break;
       case "copy-cmd": copyText(gameCommand(i.location, +(e.target.closest("[data-n]")?.dataset.n || 0)), "Command copied"); break;
       case "send-cmd": sendToGame(+(e.target.closest("[data-n]")?.dataset.n || 0)); break;

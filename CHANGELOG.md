@@ -6,6 +6,13 @@ and the project uses [Semantic Versioning](https://semver.org/). The version liv
 
 ## [Unreleased]
 
+## [1.12.0] - 2026-10-20
+
+### Added
+
+- Copy as prompt in each entry header: copies the description, plan, verification, comments,
+  location, build and attachment links as Markdown for a coding agent.
+
 ## [1.11.0] - 2026-10-17
 
 ### Added

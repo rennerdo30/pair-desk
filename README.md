@@ -217,6 +217,7 @@ python desk.py serve --lan           # all interfaces, no authentication: truste
 - **Large lists:** triage, backlog and board render the visible rows with a small scroll buffer.
   Keyboard movement and selection include loaded issues outside that window; live edits keep
   unchanged rows in place. *Show more* still loads another page of issues.
+- **Copy as prompt:** copy an entry and its context as Markdown to paste into a coding agent.
 - **Live updates:** tabs share one event stream across projects through a browser shared worker
   (short polling when unavailable), and release their subscriptions when navigating away.
   A comment, status change, plan tick, merge, game report or handoff save from anywhere appears
