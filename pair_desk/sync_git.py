@@ -25,6 +25,7 @@ import re
 import signal
 import subprocess
 import tempfile
+import threading
 import time
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -131,8 +132,16 @@ def _stop(proc: subprocess.Popen) -> None:
 
 
 class GitBranch:
+    """A cancellable data transport; timeout bounds each complete public call.
+
+    Cancellation/deadline checks are cooperative between local file operations
+    and during subprocess waits. Owned-process reaping and temporary-directory
+    cleanup still run after cancellation or expiry, with bounded process waits.
+    """
+
     def __init__(self, cache_dir: Path, remote: str, branch: str = "pair-desk-data", *,
-                 author_name: str, author_email: str, timeout: float = 20):
+                 author_name: str, author_email: str, timeout: float = 20,
+                 cancel_event: threading.Event | None = None):
         self.remote, self.protocol = _remote_address(remote)
         self.ref = _branch_ref(branch)
         if any(not isinstance(v, str) or not v.strip() or any(ord(c) < 32 or c in "<>\x7f" for c in v)
@@ -144,6 +153,38 @@ class GitBranch:
         self.author_name = author_name
         self.author_email = author_email
         self.timeout = timeout
+        self.cancel_event = cancel_event
+        self._operation_state = threading.local()
+
+    def _remaining(self, command_deadline: float | None = None) -> float | None:
+        if self.cancel_event is not None and self.cancel_event.is_set():
+            raise SyncError("Git transport cancelled.")
+        deadline = getattr(self._operation_state, "deadline", None)
+        if command_deadline is not None:
+            deadline = min(deadline, command_deadline) if deadline is not None else command_deadline
+        if deadline is None:
+            return None
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise SyncError("Git transport timed out.")
+        return remaining
+
+    @contextlib.contextmanager
+    def _operation(self):
+        # Instance-local, thread-local state keeps concurrent callers' deadlines
+        # independent. Nested calls cannot extend their enclosing operation.
+        previous = getattr(self._operation_state, "deadline", None)
+        deadline = time.monotonic() + self.timeout
+        self._operation_state.deadline = min(previous, deadline) if previous is not None else deadline
+        try:
+            self._remaining()
+            yield
+            self._remaining()
+        finally:
+            if previous is None:
+                del self._operation_state.deadline
+            else:
+                self._operation_state.deadline = previous
 
     def _options(self, repo: Path) -> list[str]:
         # These are invocation-local; do not write config or copy remote config.
@@ -180,6 +221,7 @@ class GitBranch:
                     raise SyncError("Git repository exceeds transport limits.")
 
     def _run(self, repo: Path, args: list[str], *, data: bytes = b"", limit: int = MAX_TREE_BYTES) -> bytes:
+        self._remaining()
         argv = ["git", "--no-replace-objects", "--literal-pathspecs", "--no-optional-locks",
                 *self._options(repo), "--git-dir=" + str(repo), *args]
         env = _environment(self.author_name, self.author_email, repo.parent / "index")
@@ -188,6 +230,7 @@ class GitBranch:
         with tempfile.TemporaryFile(dir=repo.parent) as source, tempfile.TemporaryFile(dir=repo.parent) as output:
             source.write(data)
             source.seek(0)
+            self._remaining()
             proc = subprocess.Popen(argv, cwd=repo.parent, env=env, stdin=source, stdout=output,
                                     stderr=subprocess.DEVNULL, close_fds=True,
                                     creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
@@ -196,22 +239,23 @@ class GitBranch:
             try:
                 deadline = time.monotonic() + self.timeout
                 while True:
+                    remaining = self._remaining(deadline)
                     if os.fstat(output.fileno()).st_size > limit:
                         raise SyncError("Git output exceeds transport limits.")
                     self._check_disk(repo)
-                    remaining = deadline - time.monotonic()
-                    if remaining <= 0:
-                        raise SyncError("Git transport timed out.")
+                    remaining = self._remaining(deadline)
                     try:
                         proc.wait(timeout=min(0.05, remaining))
                         break
                     except subprocess.TimeoutExpired:
                         pass
+                self._remaining(deadline)
                 self._check_disk(repo)
                 if os.fstat(output.fileno()).st_size > limit:
                     raise SyncError("Git output exceeds transport limits.")
                 output.seek(0)
                 result = output.read(limit + 1)
+                self._remaining(deadline)
                 if proc.returncode:
                     rejected = args[0] == "push" and any(
                         line.startswith(b"!\t") and b"\t[rejected]" in line for line in result.splitlines())
@@ -277,6 +321,7 @@ class GitBranch:
         # Only the root and two whitelisted directories can be traversed. Check
         # each tree's uncompressed size before ls-tree allocates/decompresses it.
         while pending:
+            self._remaining()
             tree, prefix = pending.pop()
             try:
                 size = int(self._run(repo, ["cat-file", "-s", tree], limit=32))
@@ -287,6 +332,7 @@ class GitBranch:
                 raise SyncError("Data tree exceeds transport limits.")
             listing = self._run(repo, ["ls-tree", "-l", "-z", tree])
             for entry in listing.split(b"\0"):
+                self._remaining()
                 if not entry:
                     continue
                 entries += 1
@@ -318,6 +364,7 @@ class GitBranch:
         stream = io.BytesIO(raw)
         files = {}
         for name, oid, length in blobs:
+            self._remaining()
             if stream.readline(128) != f"{oid} blob {length}\n".encode():
                 raise SyncError("Invalid data blob response.")
             content = stream.read(length)
@@ -330,17 +377,21 @@ class GitBranch:
 
     def read(self) -> tuple[str | None, dict[str, bytes]]:
         """Read only the exact remote branch; a missing branch is (None, {})."""
-        with self._repository() as repo:
+        with self._operation(), self._repository() as repo:
             commit = self._fetch(repo)
             return (commit, self._files(repo, commit)) if commit else (None, {})
 
     def head(self) -> str | None:
         """Probe the exact ref without fetching any objects (cheap poll fast path)."""
-        with self._repository() as repo:
+        with self._operation(), self._repository() as repo:
             return self._head(repo)
 
     def publish(self, files: dict[str, bytes], parent: str | None) -> str:
         """Replace a complete snapshot, conditional on its exact parent, without force."""
+        with self._operation():
+            return self._publish(files, parent)
+
+    def _publish(self, files: dict[str, bytes], parent: str | None) -> str:
         if parent is not None and (not isinstance(parent, str) or not _OID.fullmatch(parent)):
             raise SyncError("Invalid parent commit.")
         if not isinstance(files, dict) or len(files) > MAX_FILES:
@@ -348,6 +399,7 @@ class GitBranch:
         files = dict(files)
         total = 0
         for name, content in files.items():
+            self._remaining()
             if not isinstance(name, str) or not _FILE.fullmatch(name) or not isinstance(content, bytes):
                 raise SyncError("Data snapshot contains an unsupported path or content.")
             total += len(content)
@@ -365,6 +417,7 @@ class GitBranch:
             names = sorted(files)
             paths = []
             for i, name in enumerate(names):
+                self._remaining()
                 path = staged / str(i)
                 path.write_bytes(files[name])
                 paths.append(os.fsencode(path) + b"\n")
@@ -384,6 +437,7 @@ class GitBranch:
                 self._run(repo, ["push", "--porcelain", "--no-follow-tags", "--recurse-submodules=no",
                                  "--", self.remote, commit + ":" + self.ref])
             except _GitFailure as error:
+                self._remaining()
                 rejected = error.rejected
                 if not rejected:
                     # A receive-side race after advertisement can be reported as
@@ -391,6 +445,7 @@ class GitBranch:
                     try:
                         rejected = self._head(repo) != parent
                     except SyncError:
+                        self._remaining()
                         pass  # Preserve a sanitized transport failure if offline.
                 if rejected:
                     raise PushRejected("Data branch changed; read it again before publishing.") from None
