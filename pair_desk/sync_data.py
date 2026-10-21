@@ -763,8 +763,10 @@ def merge(base: dict, local: dict, remote: dict) -> tuple[dict, list[dict]]:
     """Fieldwise three-way merge; conflicts retain both inputs, never content LWW.
 
     Histories append by UUID. Plans, build state, location commands and relationship
-    bundles are atomic. Deletion always requires an explicit tombstone. Conflicts
-    contain full-document paths and JSON base/local/remote values; {$missing:true}
+    bundles are atomic. Status and closed_at conflict together at their field paths;
+    the coordinator must select the same side for both. Deletion always requires an
+    explicit tombstone. Conflicts contain full-document paths and JSON
+    base/local/remote values; {$missing:true}
     represents absence, distinct from null. The candidate uses local on conflict
     and MUST NOT be applied until the coordinator resolves/validates all conflicts.
     """
@@ -790,10 +792,11 @@ def merge(base: dict, local: dict, remote: dict) -> tuple[dict, list[dict]]:
             return copy.deepcopy(l)
         if l == MISSING or r == MISSING or l == TOMBSTONE or r == TOMBSTONE:
             return conflict(path, b, l, r, "deletion-edit")
+        lifecycle_conflict = False
         if len(path) == 3 and path[:2] == ["records", "issues"]:
             lifecycle = lambda row: (row.get("status"), row.get("closed_at"))
-            if lifecycle(l) != lifecycle(b) and lifecycle(r) != lifecycle(b) and lifecycle(l) != lifecycle(r):
-                return conflict(path, b, l, r, "lifecycle")
+            lifecycle_conflict = (lifecycle(l) != lifecycle(b) and lifecycle(r) != lifecycle(b)
+                                  and lifecycle(l) != lifecycle(r))
         atomic = path[-1:] in (["plan"], ["build"], ["location"], ["detail"], ["parents"])
         # A history record is immutable, apart from movement during merge/unmerge.
         if len(path) == 3 and path[0] == "records" and path[1] != "issues":
@@ -801,7 +804,12 @@ def merge(base: dict, local: dict, remote: dict) -> tuple[dict, list[dict]]:
         if isinstance(b, dict) and isinstance(l, dict) and isinstance(r, dict) and not atomic:
             result = {}
             for key in sorted(b.keys() | l.keys() | r.keys()):
-                value = combine(b.get(key, MISSING), l.get(key, MISSING), r.get(key, MISSING), [*path, key])
+                if lifecycle_conflict and key in ("status", "closed_at"):
+                    # Expose both fields, even if one agrees, so resolution takes
+                    # a valid pair without replacing unrelated title/body edits.
+                    value = conflict([*path, key], b.get(key, MISSING), l[key], r[key], "lifecycle")
+                else:
+                    value = combine(b.get(key, MISSING), l.get(key, MISSING), r.get(key, MISSING), [*path, key])
                 if value != MISSING:
                     result[key] = value
             return result

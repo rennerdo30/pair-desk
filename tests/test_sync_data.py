@@ -354,21 +354,93 @@ class SyncDataTests(StoreCase):
         self.assertEqual(conflicts[0]["path"], ["records"])
         self.assertEqual(conflicts[0]["kind"], "coupled-relationships")
 
+    def assert_lifecycle_resolution(self, base, local, other, key):
+        unchanged = copy.deepcopy((base, local, other))
+        candidate, conflicts = merge(base, local, other)
+        self.assertEqual((base, local, other), unchanged)
+        validate(candidate)
+        issue = candidate["records"]["issues"][key]
+        self.assertEqual(issue["title"], "Local title")
+        self.assertEqual(issue["body"], "Remote body")
+        for field in ("status", "closed_at"):
+            self.assertEqual(issue[field], local["records"]["issues"][key][field])
+        self.assertEqual(conflicts, [
+            {"path": ["records", "issues", key, field], "kind": "lifecycle",
+             "base": base["records"]["issues"][key][field],
+             "local": local["records"]["issues"][key][field],
+             "remote": other["records"]["issues"][key][field]}
+            for field in ("closed_at", "status")])
+        for kind in ("comments", "attachments", "activity"):
+            self.assertEqual(candidate["records"][kind],
+                             {**local["records"][kind], **other["records"][kind]})
+        for side, source in (("local", local), ("remote", other)):
+            with self.subTest(take=side):
+                selected = copy.deepcopy(candidate)
+                # Match the coordinator's same-side selection across all paths.
+                for item in conflicts:
+                    target = selected
+                    for part in item["path"][:-1]:
+                        target = target[part]
+                    target[item["path"][-1]] = copy.deepcopy(item[side])
+                validate(selected)
+                resolved = selected["records"]["issues"][key]
+                self.assertEqual(resolved["title"], "Local title")
+                self.assertEqual(resolved["body"], "Remote body")
+                for field in ("status", "closed_at"):
+                    self.assertEqual(resolved[field], source["records"]["issues"][key][field])
+                restored = self.desk("resolved-" + side)
+                configure_identity(restored, "mygame", base["project"]["uuid"])
+                # This trusted data API restores historical owner verdicts. The
+                # coordinator separately authorizes agent-facing resolution.
+                apply_snapshot(restored, "mygame", selected)
+                self.assertEqual(snapshot(restored, "mygame"), selected)
+
+    def test_lifecycle_resolution_retains_title_and_body_for_either_choice(self):
+        base, remote, key = self.branches()
+        self.store.update_issue("MG-1", {"title": "Local title"})
+        self.store.add_comment("MG-1", "owner", "Local failed", verdict="failed")
+        self.clock.advance(seconds=1)
+        remote.update_issue("MG-1", {"body": "Remote body"})
+        remote.set_status("MG-1", "closed")
+        self.assert_lifecycle_resolution(base, snapshot(self.store, "mygame"),
+                                         snapshot(remote, "mygame"), key)
+
     def test_status_conflict_keeps_closed_time_coupled_for_either_choice(self):
         base, remote, key = self.branches()
         self.clock.advance(seconds=1)
+        self.store.update_issue("MG-1", {"title": "Local title"})
         self.store.add_comment("MG-1", "owner", "Local failed", verdict="failed")
         self.clock.advance(seconds=1)
+        remote.update_issue("MG-1", {"body": "Remote body"})
         remote.add_comment("MG-1", "owner", "Remote passed", verdict="passed")
-        local, other = snapshot(self.store, "mygame"), snapshot(remote, "mygame")
-        candidate, conflicts = merge(base, local, other)
-        validate(candidate)
-        self.assertEqual(conflicts[0]["path"], ["records", "issues", key])
-        self.assertEqual(conflicts[0]["kind"], "lifecycle")
-        self.assertEqual(candidate["records"]["issues"][key]["status"], "failed")
-        self.assertIsNone(candidate["records"]["issues"][key]["closed_at"])
-        for side in ("local", "remote"):
-            selected = copy.deepcopy(candidate)
-            selected["records"]["issues"][key] = conflicts[0][side]
-            validate(selected)
-            self.assertEqual(len(selected["records"]["comments"]), 2)
+        self.assert_lifecycle_resolution(base, snapshot(self.store, "mygame"),
+                                         snapshot(remote, "mygame"), key)
+
+    def test_local_passed_history_survives_either_lifecycle_choice(self):
+        base, remote, key = self.branches()
+        self.store.update_issue("MG-1", {"title": "Local title"})
+        self.store.add_comment("MG-1", "owner", "Local passed", verdict="passed")
+        self.clock.advance(seconds=1)
+        remote.update_issue("MG-1", {"body": "Remote body"})
+        remote.add_comment("MG-1", "owner", "Remote failed", verdict="failed")
+        self.assert_lifecycle_resolution(base, snapshot(self.store, "mygame"),
+                                         snapshot(remote, "mygame"), key)
+
+    def test_equal_open_closed_times_still_conflict_with_lifecycle_status(self):
+        base, remote, key = self.branches()
+        self.store.update_issue("MG-1", {"title": "Local title"})
+        self.store.set_status("MG-1", "failed")
+        remote.update_issue("MG-1", {"body": "Remote body"})
+        remote.set_status("MG-1", "parked")
+        self.assert_lifecycle_resolution(base, snapshot(self.store, "mygame"),
+                                         snapshot(remote, "mygame"), key)
+
+    def test_equal_closed_status_still_conflicts_with_lifecycle_time(self):
+        base, remote, key = self.branches()
+        self.store.update_issue("MG-1", {"title": "Local title"})
+        self.store.set_status("MG-1", "closed")
+        self.clock.advance(seconds=1)
+        remote.update_issue("MG-1", {"body": "Remote body"})
+        remote.set_status("MG-1", "closed")
+        self.assert_lifecycle_resolution(base, snapshot(self.store, "mygame"),
+                                         snapshot(remote, "mygame"), key)
