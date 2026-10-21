@@ -251,7 +251,7 @@ class Handler(BaseHTTPRequestHandler):
         """The build with `local` (what this machine can do with its path) for a client on this machine."""
         if not build:
             return build
-        info = launch.local_info(build.get("path")) if self._loopback_client() else launch.local_info(None)
+        info = launch.local_info(build.get("path")) if self._loopback_client() and not build.get("sync_remote") else launch.local_info(None)
         return {**build, "local": info}
 
     def _cors(self):
@@ -454,7 +454,7 @@ class Handler(BaseHTTPRequestHandler):
         self._read_body()
         if not build:
             raise NotFound("there is no build to " + action)
-        self._json((launch.reveal if action == "open" else launch.run)(build["path"]))
+        self._json((launch.reveal if action == "open" else launch.run)(launch.registered_path(build)))
 
     @route("POST", r"/api/projects/([^/]+)/build/(open|run)")
     def api_build_launch(self, slug, action):

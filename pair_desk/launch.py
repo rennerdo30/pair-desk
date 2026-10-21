@@ -19,6 +19,13 @@ from .store import Conflict
 WINDOWS_RUNNABLE = (".exe", ".com")
 
 
+def registered_path(build: dict) -> str:
+    """Shared evidence needs an explicit local build registration before execution."""
+    if build.get("sync_remote"):
+        raise Conflict("this build is shared evidence; register its local path with build set before opening or running it")
+    return build["path"]
+
+
 def local_info(path: str | None) -> dict:
     """What this machine can do with a build path: {exists, kind: file|folder|None, open, run}. A version string or
     a relative path is not a place on disk, so it gets nothing."""

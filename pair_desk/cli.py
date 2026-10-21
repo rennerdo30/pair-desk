@@ -599,7 +599,7 @@ def cmd_build(args, store: Store) -> int:
         build = (store.get_issue(args.issue, full=False) if args.issue else store.get_build(_project(args, store)))["build"]
         if not build:
             raise DeskError(f"{args.issue or 'the project'} has no build to {args.action}")
-        res = (launch.reveal if args.action == "open" else launch.run)(build["path"])
+        res = (launch.reveal if args.action == "open" else launch.run)(launch.registered_path(build))
         print(f"Started {res['started']}" if args.action == "run" else f"Opened {res['folder']}")
         return 0
     slug = _project(args, store)
