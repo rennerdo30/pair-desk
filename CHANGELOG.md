@@ -6,6 +6,32 @@ and the project uses [Semantic Versioning](https://semver.org/). The version liv
 
 ## [Unreleased]
 
+### Added
+
+- Optional per-project sharing across PCs through a dedicated `pair-desk-data` branch in the
+  project's existing Git repository (GitHub, GitLab or any Git server; no hub). Off by default:
+  a project stays local-only until `pair-desk sync enable` is run on each device with a
+  credential-free remote and a public commit identity. Authentication uses the existing Git
+  credential helper or SSH. Pair Desk keeps its own Git repository in the desk data folder and
+  never changes a code checkout's branch, index or working files. See `docs/git-sync.md`.
+- The branch holds a portable JSON snapshot keyed by stable UUIDs: issues, comments, plans,
+  relationships, activity, handoff revisions, build evidence and attachment bytes, with their
+  history in Git. Machine folder links, notification cursors, routing preferences, credentials and
+  queued game commands stay local; imported build paths are evidence only.
+- Device-safe issue numbering: each device reserves a block of 1,000 `PREFIX-number`s before
+  creating shared issues, so devices working offline never reuse each other's numbers. Numbers
+  may have gaps.
+- Server and MCP sessions synchronize in the background on startup and about every 30 seconds;
+  CLI writes schedule one deduplicated background attempt. `sync status`, `sync run`,
+  `sync resolve` and `sync disable` inspect and control it. Local writes never wait for the remote.
+- Three-way merge against the last synchronized baseline: independent edits combine; concurrent
+  edits to the same field, plan or handoff, and deletion versus modification, become explicit
+  conflicts resolved with `sync resolve --take local|remote`. Timestamps never pick a winner, and
+  conflict resolution cannot create a passed verdict. Imports validate the whole record graph and
+  attachments before one transaction; pushes are forward-only and never forced.
+- Every Pair Desk writer on a device must be updated before sharing is enabled. Restoring a
+  backup leaves sharing disabled and clears the device's issue-number block.
+
 ## [1.12.0] - 2026-10-20
 
 ### Added
