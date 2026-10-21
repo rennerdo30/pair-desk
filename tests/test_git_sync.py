@@ -6,7 +6,7 @@ import subprocess
 import tempfile
 import threading
 import unittest
-from contextlib import redirect_stdout
+from contextlib import contextmanager, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
@@ -221,6 +221,65 @@ class GitSyncTests(unittest.TestCase):
         self.assertLess(int(first["id"].split("-")[1]), int(second["id"].split("-")[1]))
         self.assertLess(int(second["id"].split("-")[1]), int(third["id"].split("-")[1]))
 
+    def test_disabled_device_keeps_own_range_after_importing_peer_numbers(self):
+        self.pair()
+        peer_first = self.issue(self.b, "peer first")
+        self.assertEqual(peer_first["id"], "MG-1001")
+        self.mb.run("mygame")
+        self.ma.run("mygame")
+        before = tuple(self.a._read("SELECT p.next_number,s.shared,s.range_start,s.range_end "
+                                    "FROM projects p JOIN sync_projects s ON s.project_id=p.id")[0])
+        self.ma.disable("mygame")
+        after = tuple(self.a._read("SELECT p.next_number,s.shared,s.range_start,s.range_end "
+                                   "FROM projects p JOIN sync_projects s ON s.project_id=p.id")[0])
+        self.assertEqual(after, before)
+        with patch.object(GitBranch, "read", side_effect=AssertionError("disabled network")), \
+                patch.object(GitBranch, "head", side_effect=AssertionError("disabled network")):
+            self.assertEqual(self.ma.run("mygame")["status"], "disabled")
+            local = self.issue(self.a, "disabled local")
+        peer_second = self.issue(self.b, "peer second")
+        self.assertEqual(local["id"], "MG-1")
+        self.assertEqual(peer_second["id"], "MG-1002")
+        self.assertEqual(self.enable(self.ma)["status"], "synced")
+        self.assertEqual(self.mb.run("mygame")["status"], "synced")
+        self.assertEqual(self.ma.run("mygame")["status"], "synced")
+        for store in (self.a, self.b):
+            self.assertEqual({i["id"]: i["title"] for i in store.list_issues("mygame")["issues"]},
+                             {local["id"]: "disabled local", peer_first["id"]: "peer first",
+                              peer_second["id"]: "peer second"})
+
+    def test_disabled_exhaustion_blocks_until_online_reenable(self):
+        self.pair()
+        self.ma.disable("mygame")
+        with self.a._tx() as c:
+            c.execute("UPDATE projects SET next_number=1001 WHERE slug='mygame'")
+        with self.assertRaises(DeskError):
+            self.issue(self.a, "must not use peer range")
+        peer = self.issue(self.b, "peer owns 1001")
+        self.assertEqual(peer["id"], "MG-1001")
+        moved = self.root / "offline.git"
+        self.remote.rename(moved)
+        with self.assertRaises(SyncError):
+            self.enable(self.ma)
+        with self.assertRaises(DeskError):
+            self.issue(self.a, "still exhausted offline")
+        moved.rename(self.remote)
+        self.assertEqual(self.enable(self.ma)["status"], "synced")
+        self.assertEqual(self.issue(self.a, "fresh reservation")["id"], "MG-2001")
+
+    def test_disabled_copied_binding_blocks_first_cli_create(self):
+        self.enable(self.ma)
+        self.ma.disable("mygame")
+        b = self.desk("b")
+        self.a.conn.backup(b.conn)
+        with patch.object(sync, "schedule_once", return_value=None), \
+                patch("sys.stderr", io.StringIO()), redirect_stdout(io.StringIO()):
+            result = main(["--data", str(b.data_dir), "add", "--project", "mygame", "--title", "unsafe clone",
+                           "--kind", "bug", "--status", "open", "--json"])
+        self.assertEqual(result, 1)
+        self.assertEqual(b.list_issues("mygame")["issues"], [])
+        self.assertEqual(sync.SyncManager(b).status()[0]["status"], "rebind-required")
+
     def test_copied_database_requires_rebind_new_device_and_range(self):
         self.enable(self.ma)
         self.issue(self.a)
@@ -293,6 +352,40 @@ class GitSyncTests(unittest.TestCase):
         with self.assertRaisesRegex(SyncError, "cannot manufacture|Structural conflict"):
             self.mb.resolve("mygame", "remote")
         self.assertEqual(self.b.get_issue(item["id"])["status"], "failed")
+
+    def _resolve_lifecycle_with_independent_fields(self, take):
+        item = self.issue(self.a)
+        self.pair()
+        self.a.update_issue(item["id"], {"title": "local title"})
+        self.a.set_status(item["id"], "closed")
+        local_closed_at = self.a.get_issue(item["id"])["closed_at"]
+        self.a.add_comment(item["id"], "local", "local history")
+        self.b.update_issue(item["id"], {"body": "remote body"})
+        self.b.set_status(item["id"], "in_progress")
+        self.b.add_comment(item["id"], "remote", "remote history")
+        self.mb.run("mygame")
+        result = self.ma.run("mygame")
+        self.assertEqual(result["status"], "conflict")
+        self.assertEqual({c["path"][-1] for c in result["conflicts"]}, {"status", "closed_at"})
+        self.assertTrue(all(c["kind"] == "lifecycle" for c in result["conflicts"]))
+        self.assertEqual(self.ma.resolve("mygame", take)["status"], "pending")
+        chosen = ("closed", local_closed_at) if take == "local" else ("in_progress", None)
+        resolved = self.a.get_issue(item["id"])
+        self.assertEqual((resolved["title"], resolved["body"]), ("local title", "remote body"))
+        self.assertEqual((resolved["status"], resolved["closed_at"]), chosen)
+        self.assertEqual(self.ma.run("mygame")["status"], "synced")
+        self.assertEqual(self.mb.run("mygame")["status"], "synced")
+        for store in (self.a, self.b):
+            resolved = store.get_issue(item["id"])
+            self.assertEqual((resolved["title"], resolved["body"]), ("local title", "remote body"))
+            self.assertEqual((resolved["status"], resolved["closed_at"]), chosen)
+            self.assertEqual({c["text"] for c in resolved["comments"]}, {"local history", "remote history"})
+
+    def test_lifecycle_take_local_keeps_local_title_and_remote_body(self):
+        self._resolve_lifecycle_with_independent_fields("local")
+
+    def test_lifecycle_take_remote_keeps_local_title_and_remote_body(self):
+        self._resolve_lifecycle_with_independent_fields("remote")
 
     def test_structural_resolution_keeps_all_records_and_does_not_publish(self):
         item = self.issue(self.a)
@@ -367,7 +460,7 @@ class GitSyncTests(unittest.TestCase):
         fake = unittest.mock.Mock(pid=123456)
         fake.wait.return_value = 0
         with patch.object(sync.subprocess, "Popen", return_value=fake) as spawn:
-            with sync.cycle_lock(self.a.data_dir) as held:
+            with sync._file_lock(self.a.data_dir, "schedule.lock") as held:
                 self.assertTrue(held)
                 self.assertIsNone(sync.schedule_once(self.a.data_dir))
             self.assertEqual(sync.schedule_once(self.a.data_dir), fake.pid)
@@ -375,6 +468,48 @@ class GitSyncTests(unittest.TestCase):
             self.assertEqual(spawn.call_count, 1)
         entries = (self.a.data_dir / "sync/children.jsonl").read_text().splitlines()
         self.assertEqual(json.loads(entries[0])["pid"], fake.pid)
+
+    def test_cli_write_after_checkpoint_before_unlock_gets_successor_cycle(self):
+        self.enable(self.ma)
+        self.issue(self.a, "first write")
+        original_lock = sync.cycle_lock
+        scheduled = []
+        spawns = []
+        injected = False
+        fake = unittest.mock.Mock(pid=123456)
+        fake.wait.return_value = 0
+
+        @contextmanager
+        def write_at_unlock(data_dir):
+            nonlocal injected
+            with original_lock(data_dir) as acquired:
+                try:
+                    yield acquired
+                finally:
+                    # The checkpoint already committed and returned status='synced'.
+                    # The final CLI write lands before the cycle releases its lock.
+                    if acquired and not injected:
+                        injected = True
+                        with Store(data_dir) as writer:
+                            self.issue(writer, "last CLI write")
+                        with patch.object(sync.subprocess, "Popen", return_value=fake) as spawn:
+                            scheduled.append(sync.schedule_once(data_dir))
+                            spawns.append(spawn.call_count)
+
+        with patch.object(sync, "cycle_lock", write_at_unlock):
+            self.assertFalse(sync.run_enabled(self.a.data_dir))
+        self.assertEqual(scheduled, [fake.pid])
+        self.assertEqual(spawns, [1])
+        event = unittest.mock.Mock()
+        event.wait.return_value = False
+        event.is_set.return_value = False
+        with patch.object(sync.threading, "Event", return_value=event), patch.object(sync.threading, "Timer"):
+            sync._once(self.a.data_dir)
+        self.assertEqual(event.wait.call_args_list[0], unittest.mock.call(sync.INTERVAL))
+        third = self.desk("c")
+        self.enable(sync.SyncManager(third))
+        self.assertEqual({i["title"] for i in third.list_issues("mygame")["issues"]},
+                         {"first write", "last CLI write"})
 
     def test_lock_is_nonblocking_across_processes(self):
         code = """import os,sys
