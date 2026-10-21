@@ -136,11 +136,11 @@ def _encode(doc, manifest):
 
 
 @contextmanager
-def cycle_lock(data_dir):
+def _file_lock(data_dir, name):
     """Nonblocking advisory OS lock. No PID checks and no stale lock deletion."""
     directory = Path(data_dir) / "sync"
     directory.mkdir(parents=True, exist_ok=True)
-    with open(directory / "cycle.lock", "a+b") as handle:
+    with open(directory / name, "a+b") as handle:
         handle.seek(0, os.SEEK_END)
         if handle.tell() == 0:
             handle.write(b"0")
@@ -166,21 +166,30 @@ def cycle_lock(data_dir):
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
-def has_enabled(data_dir):
-    """Cheap read-only probe; default-disabled desks do no Git work."""
+def cycle_lock(data_dir):
+    return _file_lock(data_dir, "cycle.lock")
+
+
+def _has_sync(data_dir, enabled_only=True):
+    """Cheap read-only probe; unconfigured desks do no synchronization work."""
     db = Path(data_dir) / "desk.sqlite"
     if not db.is_file():
         return False
     try:
         with closing(sqlite3.connect(db.resolve().as_uri() + "?mode=ro", uri=True, timeout=1)) as conn:
-            return bool(conn.execute("SELECT 1 FROM git_sync WHERE enabled=1 LIMIT 1").fetchone())
+            return bool(conn.execute("SELECT 1 FROM git_sync"
+                                     + (" WHERE enabled=1" if enabled_only else "") + " LIMIT 1").fetchone())
     except sqlite3.OperationalError:
         return False
 
 
+def has_enabled(data_dir):
+    return _has_sync(data_dir)
+
+
 def prepare_store(store):
     """Check copied-database bindings before exposing any application writer."""
-    if has_enabled(store.data_dir):
+    if _has_sync(store.data_dir, enabled_only=False):
         SyncManager(store).status()
 
 
@@ -250,7 +259,7 @@ class SyncManager:
         out = []
         for raw in rows:
             row = dict(raw)
-            if row["enabled"] and not self._check_binding(row):
+            if (row["enabled"] or row["device_uuid"] or row["binding"]) and not self._check_binding(row):
                 row = self._row(row["slug"])
             out.append({k: row[k] for k in ("slug", "enabled", "branch", "device_uuid", "status",
                                             "last_attempt", "last_success", "remote_head")}
@@ -447,17 +456,12 @@ class SyncManager:
         with cycle_lock(self.store.data_dir) as acquired:
             if not acquired:
                 raise SyncError("Another synchronization is running; try again.")
-            self._row(slug)
-            # Retain the baseline/journal and disable the shared number guard in
-            # the same transaction as the enabled flag (including after a crash).
+            if not self._check_binding(self._row(slug)):
+                return self.status(slug)[0]
+            # Disabling stops network work, not ownership of the shared namespace.
+            # Preserve the exact cursor/reservation and its exhaustion guard;
+            # imported peer numbers must never become this device's cursor.
             with self.store._tx() as c:
-                project = c.execute("SELECT id,next_number FROM projects WHERE slug=?", (slug,)).fetchone()
-                maximum = c.execute("SELECT COALESCE(MAX(number),0)+1 FROM issues WHERE project_id=?",
-                                    (project["id"],)).fetchone()[0]
-                c.execute("UPDATE projects SET next_number=? WHERE id=?",
-                          (max(maximum, project["next_number"]), project["id"]))
-                c.execute("UPDATE sync_projects SET shared=0,range_start=NULL,range_end=NULL WHERE project_id=?",
-                          (project["id"],))
                 c.execute("UPDATE git_sync SET enabled=0,status='disabled' WHERE slug=?", (slug,))
             return self.status(slug)[0]
 
@@ -558,13 +562,16 @@ def start_worker(data_dir):
 def schedule_once(data_dir):
     """CLI calls return promptly; a hidden, time-limited child attempts one cycle.
 
-    A persistent throttle is set while holding the same OS lock as workers. The
-    child also acquires that lock; concurrent CLI callers cannot launch a flood.
+    A separate scheduling lock protects the persistent throttle. A CLI write can
+    queue a child even after a worker's checkpoint but before its cycle unlocks.
+    The child coalesces writes for INTERVAL before acquiring the cycle lock, so
+    the throttle expires before its checkpoint and a later write can queue its
+    successor. Concurrent CLI callers still launch at most one per interval.
     """
     if not has_enabled(data_dir):
         return None
     directory = Path(data_dir) / "sync"
-    with cycle_lock(data_dir) as acquired:
+    with _file_lock(data_dir, "schedule.lock") as acquired:
         if not acquired:
             return None
         throttle = directory / "scheduled-at"
