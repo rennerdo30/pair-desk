@@ -380,12 +380,15 @@ class McpServer:
         self._header_framing = False
         self._stop = threading.Event()
         self._channel: threading.Thread | None = None
+        self._sync_worker = None
         self.channel_state: dict[str, Any] = {"enabled": False}
 
     @property
     def store(self) -> Store:
         if self._store is None:
             self._store = Store(self.data_dir)
+            from .sync import prepare_store
+            prepare_store(self._store)
         return self._store
 
     # -- helpers ----------------------------------------------------------------------------
@@ -762,6 +765,20 @@ class McpServer:
             traceback.print_exc(file=sys.stderr)
 
     def serve(self, stdin=None, stdout=None) -> None:
+        from .sync import start_worker
+        self._sync_worker = start_worker(self.data_dir)
+        try:
+            self._serve(stdin, stdout)
+        finally:
+            self._sync_worker.stop()
+            self._stop.set()
+            if self._channel is not None:
+                self._channel.join(timeout=5)
+            if self._store is not None:
+                self._store.close()
+                self._store = None
+
+    def _serve(self, stdin=None, stdout=None) -> None:
         stdin = stdin or sys.stdin.buffer
         stdout = stdout or sys.stdout.buffer
         self._out = stdout
@@ -784,11 +801,6 @@ class McpServer:
                     reply = self.handle(msg)
             if reply is not None:
                 self._send(reply)
-        self._stop.set()
-        if self._channel is not None:
-            self._channel.join(timeout=5)
-        if self._store is not None:
-            self._store.close()
 
 
 class _ChangeWaiter:

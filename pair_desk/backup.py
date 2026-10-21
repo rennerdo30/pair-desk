@@ -374,8 +374,16 @@ def restore_backup(zip_path: Path, data_dir: Path, replace: bool = False, now: _
         unlisted = _check_database(staging / DATABASE, manifest)
         # First open here, before anything moves: migrations for an older backup and the search index.
         from .store import Store
-        with Store(staging):
-            pass
+        with Store(staging) as restored:
+            # A restored SQLite copy must not reuse another PC's automatic publisher identity
+            # or reserved issue numbers. Keep its baseline/journal/conflicts for recovery;
+            # explicit enable binds the new machine and allocates a fresh number range.
+            with restored._tx() as conn:
+                if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='git_sync'").fetchone():
+                    conn.execute("UPDATE git_sync SET enabled=0, status='rebind-required', "
+                                 "binding=NULL, device_uuid=NULL")
+                    if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='sync_projects'").fetchone():
+                        conn.execute("UPDATE sync_projects SET range_start=NULL, range_end=NULL WHERE shared=1")
         if data_dir.exists():
             if _has_data(data_dir):
                 # Again: unpacking and checking a large backup takes minutes, and a session may have

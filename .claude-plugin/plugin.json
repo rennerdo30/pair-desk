@@ -2,7 +2,7 @@
   "name": "agent-pair-programming",
   "displayName": "Agent Pair Programming (Pair Desk)",
   "version": "1.12.0",
-  "description": "Pair Desk: a 100% local playtest desk, backlog and handoff shared by a game owner and coding agents. Web UI with live updates, HTTP API for the game, CLI and MCP tools for agents, and owner activity pushed into sessions.",
+  "description": "Pair Desk: a local-first playtest desk, backlog and handoff shared by a game owner and coding agents. Web UI with live updates, HTTP API for the game, CLI and MCP tools for agents, and owner activity pushed into sessions. Local-only by default; projects can opt in to sharing across PCs through a Git data branch.",
   "author": {
     "name": "rennerdo30",
     "url": "https://github.com/rennerdo30"

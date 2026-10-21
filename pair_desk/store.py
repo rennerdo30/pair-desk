@@ -155,7 +155,43 @@ CREATE TABLE IF NOT EXISTS handoffs (
     created_at TEXT NOT NULL,
     UNIQUE (project_id, version)
 );
+CREATE TABLE IF NOT EXISTS sync_projects (
+    project_id INTEGER PRIMARY KEY REFERENCES projects(id),
+    uuid TEXT NOT NULL UNIQUE,
+    shared INTEGER NOT NULL DEFAULT 0,
+    range_start INTEGER,
+    range_end INTEGER
+);
+CREATE TABLE IF NOT EXISTS sync_entities (
+    uuid TEXT PRIMARY KEY,
+    project_id INTEGER NOT NULL REFERENCES projects(id),
+    kind TEXT NOT NULL,
+    local_id INTEGER,
+    metadata TEXT NOT NULL DEFAULT '{}',
+    UNIQUE(project_id, kind, local_id)
+);
 """
+
+# Preserve published identities after deletion, including SQLite row-id reuse. These
+# additive triggers never delete user data and older writers also honor tombstones.
+SCHEMA += "\n".join(
+    f"CREATE TRIGGER IF NOT EXISTS sync_delete_{table} AFTER DELETE ON {table} BEGIN "
+    f"UPDATE sync_entities SET local_id=NULL WHERE kind='{table}' AND local_id=old.id; END;"
+    for table in ("issues", "comments", "attachments", "activity", "handoffs")
+)
+# Assign at creation so a create/delete between snapshots still leaves an explicit
+# tombstone, and numeric row-id reuse can never reuse a portable identity.
+for _sync_table in ("issues", "comments", "attachments", "activity", "handoffs"):
+    _sync_project = "new.project_id" if _sync_table in ("issues", "handoffs") else "(SELECT project_id FROM issues WHERE id=new.issue_id)"
+    _sync_metadata = "'{\"number\":'||new.number||'}'" if _sync_table == "issues" else "'{}'"
+    SCHEMA += (
+        f"CREATE TRIGGER IF NOT EXISTS sync_insert_{_sync_table} AFTER INSERT ON {_sync_table} "
+        f"WHEN EXISTS(SELECT 1 FROM sync_projects WHERE project_id={_sync_project}) BEGIN "
+        "INSERT INTO sync_entities(uuid,project_id,kind,local_id,metadata) VALUES ("
+        "lower(hex(randomblob(4)))||'-'||lower(hex(randomblob(2)))||'-'||lower(hex(randomblob(2)))||'-'||"
+        "lower(hex(randomblob(2)))||'-'||lower(hex(randomblob(6))),"
+        f"{_sync_project},'{_sync_table}',new.id,{_sync_metadata}); END;"
+    )
 
 SCHEMA_VERSION = "6"
 # Columns added after version 1: (table, column, declaration). Added on open when missing, so an
@@ -646,7 +682,7 @@ def parse_issue_build(raw: Any) -> dict | None:
 
 def build_stamp(build: dict) -> dict:
     """What an issue keeps of a build: its number, label, path, commit and build time."""
-    return {k: build[k] for k in BUILD_STAMP_FIELDS if build.get(k) not in (None, "")}
+    return {k: build[k] for k in (*BUILD_STAMP_FIELDS, "sync_remote") if build.get(k) not in (None, "")}
 
 
 def normalize_build_time(value: Any) -> str:
@@ -1213,10 +1249,14 @@ class Store:
             return conn.execute(sql, tuple(params)).fetchall()
 
     def _log(self, conn, issue_id: int, actor: str, action: str, detail: dict, at: str) -> None:
-        conn.execute(
+        cur = conn.execute(
             "INSERT INTO activity(issue_id, actor, action, detail, created_at) VALUES (?,?,?,?,?)",
             (issue_id, actor or "owner", action, json.dumps(detail, ensure_ascii=False), at),
         )
+        # Freeze structured references for tracked projects before deleted numeric
+        # row IDs can be reused. This helper uses this transaction, never a nested one.
+        from .sync_data import _remember_activity
+        _remember_activity(conn, issue_id, cur.lastrowid, action, detail)
 
     # -- projects ---------------------------------------------------------------------------
 
@@ -1227,7 +1267,7 @@ class Store:
             "name": row["name"],
             "prefix": row["prefix"],
             "created_at": row["created_at"],
-            "issue_count": row["next_number"] - 1,
+            "issue_count": row["issue_count"],
             "default_seed": row["default_seed"],
             "notify": normalize_notify(None, json.loads(row["notify"] or "{}")),
             "lead": row["lead"] or None,
@@ -1319,7 +1359,8 @@ class Store:
         return {"project": project["slug"], "seed": seed, "changed": changed}
 
     def _project_row(self, slug: str) -> sqlite3.Row:
-        rows = self._read("SELECT * FROM projects WHERE slug=?", (str(slug).strip().lower(),))
+        rows = self._read("SELECT p.*, (SELECT COUNT(*) FROM issues WHERE project_id=p.id) AS issue_count "
+                          "FROM projects p WHERE slug=?", (str(slug).strip().lower(),))
         if not rows:
             raise NotFound(f"no project {slug!r}")
         return rows[0]
@@ -1330,7 +1371,8 @@ class Store:
     @cached_read
     def list_projects(self) -> list[dict]:
         out = []
-        for row in self._read("SELECT * FROM projects ORDER BY name COLLATE NOCASE"):
+        for row in self._read("SELECT p.*, (SELECT COUNT(*) FROM issues WHERE project_id=p.id) AS issue_count "
+                              "FROM projects p ORDER BY name COLLATE NOCASE"):
             p = self._project_dict(row)
             p["counts"] = self._status_counts(row["id"])
             out.append(p)
@@ -1517,6 +1559,12 @@ class Store:
         now = self.now()
         with self._tx() as c:
             number = c.execute("SELECT next_number FROM projects WHERE id=?", (project["id"],)).fetchone()[0]
+            shared = c.execute("SELECT * FROM sync_projects WHERE project_id=? AND shared=1",
+                               (project["id"],)).fetchone()
+            if shared and (shared["range_start"] is None or not shared["range_start"] <= number <= shared["range_end"]):
+                raise Conflict("shared issue number block exhausted or missing; connect online to reserve another block")
+            if c.execute("SELECT 1 FROM issues WHERE project_id=? AND number=?", (project["id"], number)).fetchone():
+                raise Conflict("issue number already exists; reserve a fresh shared number block")
             c.execute("UPDATE projects SET next_number=? WHERE id=?", (number + 1, project["id"]))
             # Filed straight into to_check: it is in the current build.
             build = self._current_build(c, project["id"]) if v["status"] == "to_check" else None
@@ -1972,7 +2020,10 @@ class Store:
             unchanged = bool(previous and previous["path"] == path and previous.get("commit", "") == commit
                              and (not label or label == previous["label"]) and when is None)
             if unchanged:
-                build = previous
+                build = {k: v for k, v in previous.items() if k != "sync_remote"}
+                if previous.get("sync_remote"):
+                    c.execute("UPDATE projects SET build=? WHERE id=?",
+                              (json.dumps({**state, "current": build}, ensure_ascii=False), project["id"]))
             else:
                 number = state.get("count", 0) + 1
                 build = {"number": number, "label": label or default_build_label(path, commit, number), "path": path,
@@ -1983,7 +2034,7 @@ class Store:
             for r in c.execute("SELECT id, number, build FROM issues WHERE project_id=? AND status='to_check'"
                                " AND merged_into IS NULL ORDER BY number", (project["id"],)).fetchall():
                 old = parse_issue_build(r["build"])
-                if old and old.get("number") == build["number"] and old.get("path") == build["path"]:
+                if old and old.get("number") == build["number"] and old.get("path") == build["path"] and not old.get("sync_remote"):
                     continue
                 c.execute("UPDATE issues SET build=?, updated_at=? WHERE id=?",
                           (json.dumps(build_stamp(build), ensure_ascii=False), now, r["id"]))

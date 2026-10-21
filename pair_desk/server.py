@@ -165,6 +165,8 @@ class DeskServer(ThreadingHTTPServer):
     request_queue_size = 128
 
     def __init__(self, addr, store: Store, lan: bool = False, verbose: bool = False):
+        from .sync import prepare_store, start_worker
+        prepare_store(store)
         self.store = store
         self.lan = lan
         self.verbose = verbose
@@ -173,9 +175,13 @@ class DeskServer(ThreadingHTTPServer):
         super().__init__(addr, Handler)
         self.hub = ChangeHub(store.db_path)
         self.hub.start()
+        self.sync_worker = start_worker(store.data_dir)
 
     def server_close(self):
-        self.hub.stop()
+        if getattr(self, "sync_worker", None) is not None:
+            self.sync_worker.stop()
+        if getattr(self, "hub", None) is not None:
+            self.hub.stop()
         super().server_close()
 
 
@@ -251,7 +257,7 @@ class Handler(BaseHTTPRequestHandler):
         """The build with `local` (what this machine can do with its path) for a client on this machine."""
         if not build:
             return build
-        info = launch.local_info(build.get("path")) if self._loopback_client() else launch.local_info(None)
+        info = launch.local_info(build.get("path")) if self._loopback_client() and not build.get("sync_remote") else launch.local_info(None)
         return {**build, "local": info}
 
     def _cors(self):
@@ -454,7 +460,7 @@ class Handler(BaseHTTPRequestHandler):
         self._read_body()
         if not build:
             raise NotFound("there is no build to " + action)
-        self._json((launch.reveal if action == "open" else launch.run)(build["path"]))
+        self._json((launch.reveal if action == "open" else launch.run)(launch.registered_path(build)))
 
     @route("POST", r"/api/projects/([^/]+)/build/(open|run)")
     def api_build_launch(self, slug, action):

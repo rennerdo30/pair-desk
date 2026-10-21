@@ -599,7 +599,7 @@ def cmd_build(args, store: Store) -> int:
         build = (store.get_issue(args.issue, full=False) if args.issue else store.get_build(_project(args, store)))["build"]
         if not build:
             raise DeskError(f"{args.issue or 'the project'} has no build to {args.action}")
-        res = (launch.reveal if args.action == "open" else launch.run)(build["path"])
+        res = (launch.reveal if args.action == "open" else launch.run)(launch.registered_path(build))
         print(f"Started {res['started']}" if args.action == "run" else f"Opened {res['folder']}")
         return 0
     slug = _project(args, store)
@@ -1015,6 +1015,16 @@ def build_parser() -> argparse.ArgumentParser:
     def add(name, help_text):
         return sub.add_parser(name, help=help_text, parents=[common], description=help_text)
 
+    s = add("sync", "opt in to project data sharing on a dedicated Git data branch")
+    s.add_argument("action", choices=["enable", "status", "run", "disable", "resolve"])
+    s.add_argument("--project")
+    s.add_argument("--remote", help="enable: credential-free Git URL or bare repository path")
+    s.add_argument("--author-name", help="enable: public Git author name")
+    s.add_argument("--author-email", help="enable: public Git author email")
+    s.add_argument("--repo", help="optional code folder for project discovery (read only)")
+    s.add_argument("--take", choices=["local", "remote"], help="resolve: explicitly select conflicting values")
+    s.add_argument("--json", action="store_true")
+
     s = add("serve", "run the web UI and HTTP API")
     s.add_argument("--port", type=int, default=8765)
     s.add_argument("--lan", action="store_true", help="listen on all interfaces and accept LAN clients")
@@ -1329,6 +1339,32 @@ STORE_COMMANDS = {
     "plan": cmd_plan, "step": cmd_step, "parent": cmd_parent, "merge": cmd_merge, "unmerge": cmd_unmerge,
     "suggest-groups": cmd_suggest_groups, "handoff": cmd_handoff,
 }
+def cmd_sync(args, store: Store) -> int:
+    from .sync import SyncManager
+    from .sync_git import SyncError
+    manager = SyncManager(store)
+    try:
+        slug = args.project or (resolve_project(store.data_dir, args.repo) if args.repo else None)
+        if args.action == "status":
+            result = manager.status(slug)
+        else:
+            slug = slug or _project(args, store)
+            if args.action == "enable":
+                if not all((args.remote, args.author_name, args.author_email)):
+                    raise DeskError("sync enable requires --remote, --author-name and --author-email")
+                result = manager.enable(slug, args.remote, args.author_name, args.author_email, args.repo)
+            elif args.action == "resolve":
+                if not args.take:
+                    raise DeskError("sync resolve requires --take local or --take remote")
+                result = manager.resolve(slug, args.take)
+            else:
+                result = getattr(manager, args.action)(slug)
+    except SyncError as e:
+        raise DeskError(str(e)) from None
+    _out_json(result)
+    return 0
+
+
 def cmd_installer(args, data_dir: Path) -> int:
     from integrations.installer import run
     return run(args, data_dir)
@@ -1384,7 +1420,11 @@ def main(argv: list[str] | None = None) -> int:
         return RAW_COMMANDS[args.cmd](args, data_dir)
     try:
         with Store(data_dir) as store:
-            return STORE_COMMANDS[args.cmd](args, store)
+            if args.cmd != "sync":
+                from .sync import prepare_store
+                prepare_store(store)
+            result = cmd_sync(args, store) if args.cmd == "sync" else STORE_COMMANDS[args.cmd](args, store)
+        return result
     except sqlite3.OperationalError as e:
         if args.cmd in READ_ONLY_COMMANDS or not _read_only_error(e):
             print(f"error: {e}", file=sys.stderr)
@@ -1396,3 +1436,12 @@ def main(argv: list[str] | None = None) -> int:
     except (OSError, ValueError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
+    finally:
+        if args.cmd != "sync":
+            try:
+                from .sync import schedule_once
+                schedule_once(data_dir)
+            except (OSError, sqlite3.Error, DeskError):
+                # Scheduling is best effort. An ordinary local write must not
+                # report failure because a background process could not start.
+                pass

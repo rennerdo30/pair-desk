@@ -15,10 +15,14 @@ You play the game; your agents write the code. Pair Desk is the table between yo
   versioned **handoff** (where work stopped, next step, traps) and a sized, prioritised **backlog**.
 - Everything is **live**: what the game, an agent or another tab writes shows up within a second.
 
-It is 100% local: one data folder with a SQLite file and your screenshots, a Python 3.11+
+By default it is entirely local: one data folder with a SQLite file and your screenshots, a Python 3.11+
 standard-library server, a plain HTML/JS web UI with no build step, no CDN and no telemetry. The
 server listens on `127.0.0.1` only. It works for several games at once and knows nothing about
 any particular engine: locations are your game's own console commands.
+
+Optional [Git project sharing](docs/git-sync.md) synchronizes selected projects across PCs through
+a dedicated data branch in their existing repository. It uses Git authentication and remains
+disabled until explicitly configured.
 
 ![Pair Desk: the triage list with a check waiting for the owner, its plan and location](docs/images/triage.png)
 
@@ -132,7 +136,8 @@ sample data; open it with `python desk.py --data /tmp/pd-demo serve --open`.
   machine, and only from the desk's own page: it carries a token the server writes into the page it
   serves, which no other page can read. Run starts the executable without a shell or arguments.
 - **No accounts, no authentication.** Anything that runs on your computer can use the desk; that is
-  the trust boundary.
+  the local trust boundary. Optional Git sharing uses the repository's authentication and
+  permissions; repository readers can read shared desk contents and writers can change them.
 - **`--lan` is for trusted networks only.** `python desk.py serve --lan` listens on all interfaces
   (e.g. to use the desk from your phone). It still has **no authentication**: anyone on that network
   can read, change and delete your issues and screenshots and queue commands for your game. Stop it
@@ -188,6 +193,16 @@ there; link them again with `pair-desk link`), then `pair-desk install`.
 
 `python desk.py export --project mygame --out mygame.json` writes one project as readable JSON
 (attachments as metadata).
+
+### Sharing a project across PCs
+
+Projects can optionally synchronize through a dedicated `pair-desk-data` branch in their own
+Git repository. Each PC keeps its local database and works offline; background synchronization
+exchanges project records without touching code branches, staged changes or working files.
+No always-on Pair Desk host is needed. Sharing remains disabled until explicitly configured.
+
+See [Git project sharing](docs/git-sync.md) for setup, conflict handling, repository visibility,
+offline issue-number reservations, attachment storage and backup recovery.
 
 ## Running the server
 
