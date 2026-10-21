@@ -58,6 +58,12 @@ from all writers, including the CLI, and periodically imports remote updates. Or
 also schedules bounded background synchronization. A cross-process lock serializes sync work
 for each local desk. Local writes do not wait for a remote server to become available.
 
+Persistent server and MCP workers attempt synchronization on startup and about every 30 seconds.
+Short CLI commands schedule one hidden, deduplicated background process that coalesces writes
+for 30 seconds before attempting synchronization and exits within a 120-second budget.
+Use `sync run` when an immediate attempt is needed. Normal updates are eventually visible;
+the background schedule is not an instant delivery guarantee.
+
 `sync status` reports synchronization state and pending conflicts. `sync run` requests an
 immediate attempt. `sync disable` stops sharing locally without deleting the remote branch or
 the local desk. Disabling one PC does not stop other PCs from publishing.
