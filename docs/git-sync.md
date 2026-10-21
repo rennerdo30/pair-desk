@@ -73,12 +73,17 @@ the background schedule is not an instant delivery guarantee.
 `sync status` reports synchronization state and pending conflicts. `sync run` requests an
 immediate attempt. `sync disable` stops sharing locally without deleting the remote branch or
 the local desk. Disabling one PC does not stop other PCs from publishing.
+The disabled desk keeps its reserved issue-number block and can create issues within that
+block without networking. If it runs out, re-enable sharing online to reserve more numbers.
+Disabling sharing does not turn a shared project's issue numbers into an independent namespace.
 
 ## Concurrent changes and recovery
 
 Pair Desk compares the last synchronized baseline, the current local records and the fetched
 remote records. Independent comments and changes to different fields combine. Concurrent
 changes to the same field, ordered plan or current handoff need explicit conflict resolution.
+Status and its closure timestamp are resolved together; unrelated title or description edits
+still combine when the lifecycle changes conflict.
 Deletion versus modification is a conflict too. Timestamps never decide which description,
 verdict or plan wins. Local status and both conflict inputs remain available while sharing waits.
 
