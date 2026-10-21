@@ -34,6 +34,21 @@ repository's credential-free remote URL, and the public name and email for data 
 Authentication uses the existing Git credential helper or SSH setup. Credentials do not belong
 in the remote URL, project records, or command examples.
 
+For an existing `mygame` desk project, run this separately on each PC, replacing the remote
+and commit identity with your own:
+
+```sh
+pair-desk sync enable --project mygame --remote git@github.com:your-account/mygame.git --author-name "Your public name" --author-email "you@example.com"
+pair-desk sync status --project mygame --json
+pair-desk sync run --project mygame
+```
+
+For GitLab, use its Git remote instead, for example `git@gitlab.example.com:team/mygame.git`.
+This uses Git transport, not a GitHub/GitLab issues API or a separate provider token.
+Git must be installed and able to authenticate to that remote without interactive prompts.
+Run `pair-desk sync --help` for the available controls. Setup does not require switching your
+code checkout to the data branch.
+
 The first device seeds an absent data branch from one local project. A new device joins the
 existing branch into an empty local project. Two independently populated desks are not matched
 automatically by their issue titles or numbers: unrelated histories require deliberate migration.
@@ -54,6 +69,13 @@ remote records. Independent comments and changes to different fields combine. Co
 changes to the same field, ordered plan or current handoff need explicit conflict resolution.
 Deletion versus modification is a conflict too. Timestamps never decide which description,
 verdict or plan wins. Local status and both conflict inputs remain available while sharing waits.
+
+Inspect conflicts with `sync status --project mygame --json`. After reviewing the conflicting
+values, `sync resolve --project mygame --take local` or `--take remote` selects that side for
+the stored conflicts, while retaining non-conflicting edits from both sides. Then run
+`sync run --project mygame` to publish the resolved state. These controls do not grant owner
+verdict authority. If local records changed after the conflict was captured, refresh the
+conflicts before choosing a side.
 
 Protected owner verdicts are preserved as historical data from the trusted repository. Sync
 does not add an agent tool for marking checks passed, and generic conflict resolution cannot
