@@ -77,6 +77,12 @@ the stored conflicts, while retaining non-conflicting edits from both sides. The
 verdict authority. If local records changed after the conflict was captured, refresh the
 conflicts before choosing a side.
 
+Structural conflicts involving issue parent/merge relationships cannot be resolved by choosing
+an entire record set: that could discard unrelated comments and history. Both graphs are
+retained. Repair the relationships through ordinary desk operations, refresh the stored conflict
+against that new local state, and retry synchronization. No missing record is silently turned
+into a deletion to make a graph fit.
+
 Protected owner verdicts are preserved as historical data from the trusted repository. Sync
 does not add an agent tool for marking checks passed, and generic conflict resolution cannot
 manufacture a passed verdict. Repository write access is a trust boundary: a person or agent
