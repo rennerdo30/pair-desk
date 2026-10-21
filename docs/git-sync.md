@@ -60,7 +60,9 @@ for each local desk. Local writes do not wait for a remote server to become avai
 
 Persistent server and MCP workers attempt synchronization on startup and about every 30 seconds.
 Short CLI commands schedule one hidden, deduplicated background process that coalesces writes
-for 30 seconds before attempting synchronization and exits within a 120-second budget.
+for 30 seconds before attempting synchronization. Git operations honor cancellation; the child
+uses a 120-second cooperative deadline with
+bounded subprocess cleanup.
 Use `sync run` when an immediate attempt is needed. Normal updates are eventually visible;
 the background schedule is not an instant delivery guarantee.
 
