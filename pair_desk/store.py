@@ -1267,7 +1267,7 @@ class Store:
             "name": row["name"],
             "prefix": row["prefix"],
             "created_at": row["created_at"],
-            "issue_count": row["next_number"] - 1,
+            "issue_count": row["issue_count"],
             "default_seed": row["default_seed"],
             "notify": normalize_notify(None, json.loads(row["notify"] or "{}")),
             "lead": row["lead"] or None,
@@ -1359,7 +1359,8 @@ class Store:
         return {"project": project["slug"], "seed": seed, "changed": changed}
 
     def _project_row(self, slug: str) -> sqlite3.Row:
-        rows = self._read("SELECT * FROM projects WHERE slug=?", (str(slug).strip().lower(),))
+        rows = self._read("SELECT p.*, (SELECT COUNT(*) FROM issues WHERE project_id=p.id) AS issue_count "
+                          "FROM projects p WHERE slug=?", (str(slug).strip().lower(),))
         if not rows:
             raise NotFound(f"no project {slug!r}")
         return rows[0]
@@ -1370,7 +1371,8 @@ class Store:
     @cached_read
     def list_projects(self) -> list[dict]:
         out = []
-        for row in self._read("SELECT * FROM projects ORDER BY name COLLATE NOCASE"):
+        for row in self._read("SELECT p.*, (SELECT COUNT(*) FROM issues WHERE project_id=p.id) AS issue_count "
+                              "FROM projects p ORDER BY name COLLATE NOCASE"):
             p = self._project_dict(row)
             p["counts"] = self._status_counts(row["id"])
             out.append(p)
