@@ -2,7 +2,9 @@
 
 import os
 import subprocess
+import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -286,6 +288,98 @@ class GitBranchTests(unittest.TestCase):
             with self.assertRaisesRegex(SyncError, "limits"):
                 self.first._run(self.root / "fake.git", ["ls-tree"], limit=1)
             stop.assert_called_once_with(child)
+
+    def test_cancellation_before_public_operation_starts_no_subprocess(self):
+        cancelled = threading.Event()
+        cancelled.set()
+        transport = self.transport("cancelled", cancel_event=cancelled)
+        for operation in (transport.head, transport.read, lambda: transport.publish(self.files, None)):
+            with self.subTest(operation=operation), mock.patch("pair_desk.sync_git.subprocess.Popen") as spawn:
+                with self.assertRaisesRegex(SyncError, "cancelled"):
+                    operation()
+                spawn.assert_not_called()
+        self.assertFalse(transport.cache_dir.exists())
+
+    def test_total_operation_budget_prevents_later_commands(self):
+        from pair_desk import sync_git
+        transport = self.transport("budget", timeout=1)
+        clock = [0.0]
+        child = mock.Mock(pid=12345, returncode=0)
+        child.poll.return_value = 0
+
+        def completed_after_budget(**kwargs):
+            clock[0] += 0.6  # Each command fits, but two exceed the shared budget.
+            return 0
+
+        def completed_process(argv, **kwargs):
+            if "--get-url" in argv:
+                kwargs["stdout"].write(os.fsencode(transport.remote) + b"\n")
+                kwargs["stdout"].flush()
+            return child
+
+        child.wait.side_effect = completed_after_budget
+        for operation in (transport.head, transport.read, lambda: transport.publish(self.files, None)):
+            clock[0] = 0.0
+            with self.subTest(operation=operation), mock.patch.object(sync_git.time, "monotonic", side_effect=lambda: clock[0]), \
+                    mock.patch.object(sync_git.subprocess, "Popen", side_effect=completed_process) as spawn:
+                with self.assertRaisesRegex(SyncError, "timed out"):
+                    operation()
+                self.assertEqual(spawn.call_count, 2)
+
+    def test_cancellation_during_inflight_process_reaps_owned_child(self):
+        from pair_desk import sync_git
+        cancelled = threading.Event()
+        transport = self.transport("inflight", cancel_event=cancelled)
+        popen = subprocess.Popen
+        children = []
+        waiting = []
+
+        def synthetic_process(*args, **kwargs):
+            if args[0][0] == "taskkill":
+                return popen(*args, **kwargs)
+            # A sleeping subprocess replaces Git; no network or load generator.
+            child = popen([sys.executable, "-c", "import time; time.sleep(10)"], **kwargs)
+            children.append(child)
+            wait = child.wait
+
+            def cancel_while_waiting(*args, **kwargs):
+                try:
+                    return wait(*args, **kwargs)
+                except subprocess.TimeoutExpired:
+                    waiting.append(child.pid)
+                    cancelled.set()
+                    raise
+
+            child.wait = cancel_while_waiting
+            return child
+
+        with mock.patch.object(sync_git.subprocess, "Popen", side_effect=synthetic_process):
+            with self.assertRaisesRegex(SyncError, "cancelled"):
+                transport.head()
+        self.assertEqual(len(children), 1)
+        self.assertEqual(waiting, [children[0].pid])
+        self.assertIsNotNone(children[0].poll())
+        self.assertEqual(list(transport.cache_dir.glob("transport-*")), [])
+
+    def test_cancellation_between_commands_never_launches_next_command(self):
+        from pair_desk import sync_git
+        cancelled = threading.Event()
+        transport = self.transport("between", cancel_event=cancelled)
+        run = transport._run
+
+        def cancel_after_init(repo, args, **kwargs):
+            result = run(repo, args, **kwargs)
+            if args[0] == "init":
+                cancelled.set()
+            return result
+
+        popen = subprocess.Popen
+        with mock.patch.object(transport, "_run", side_effect=cancel_after_init), \
+                mock.patch.object(sync_git.subprocess, "Popen", wraps=popen) as spawn:
+            with self.assertRaisesRegex(SyncError, "cancelled"):
+                transport.head()
+            self.assertEqual(spawn.call_count, 1)
+        self.assertEqual(list(transport.cache_dir.glob("transport-*")), [])
 
     def test_disk_pack_budget_rejects_and_cleans_managed_repository(self):
         from pair_desk import sync_git
