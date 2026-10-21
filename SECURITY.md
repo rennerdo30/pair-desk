@@ -44,6 +44,18 @@ Pair Desk is a local tool. Its design assumptions:
   served with a strict Content Security Policy.
 - **The installers edit other tools' configuration** (Codex's `config.toml`, opencode's config,
   `~/.agents/skills`) only in their own `pair-desk` entries, after a timestamped backup.
+- **Git sharing is opt-in per project.** Enabling it publishes portable desk records and
+  attachments to the chosen repository's data branch using existing Git authentication.
+  Repository readers can read that history, and repository writers are trusted to modify it.
+  A history record's author name does not cryptographically authenticate an owner verdict.
+  The HTTP server stays loopback-only by default; Git sharing does not expose a desk server.
+- **Shared data is validated before import.** Remote paths, executable modes, symlinks and
+  submodules are not checked out. Queued game commands, local routing settings and folder
+  links are excluded. Imported build paths cannot grant Open or Run capability; they require
+  explicit local registration. Malformed snapshots fail before changing project records.
+- **Restored desks require a new device binding.** Restoring a backup disables automatic
+  sharing and clears its active number allocation while preserving pending recovery data.
+  It cannot silently continue publishing as the original PC.
 
 Reports that need a non-default setup (`--lan`, a hostile local user) are still welcome; say so
 in the report.
