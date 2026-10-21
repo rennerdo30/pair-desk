@@ -49,6 +49,10 @@ Git must be installed and able to authenticate to that remote without interactiv
 Run `pair-desk sync --help` for the available controls. Setup does not require switching your
 code checkout to the data branch.
 
+Update and restart every Pair Desk CLI, server and agent integration that writes to the local
+desk before enabling sharing. Older writers do not understand reserved number ranges or
+synchronization recovery state; mixing them with a shared project is unsupported.
+
 The first device seeds an absent data branch from one local project. A new device joins the
 existing branch into an empty local project. Two independently populated desks are not matched
 automatically by their issue titles or numbers: unrelated histories require deliberate migration.
