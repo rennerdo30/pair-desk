@@ -436,6 +436,19 @@ class Handler(BaseHTTPRequestHandler):
         p = self.store.project_overview(slug)
         self._json({**p, "build": self._local(p["build"])})
 
+    @route("POST", r"/api/projects/([^/]+)/topics/export")
+    def api_topics_export(self, slug):
+        from .transfer import export_topics
+        blob = export_topics(self.store, slug, self._json_body().get("ids"))
+        self._send(200, blob, "application/zip", {"Content-Disposition": 'attachment; filename="pair-desk-topics.zip"', "Cache-Control": "no-store"})
+
+    @route("POST", r"/api/projects/([^/]+)/topics/(preview|import)")
+    def api_topics_import(self, slug, action):
+        from .transfer import import_topics
+        # Importing historical owner verdicts requires an explicit local UI action.
+        self._launch_guard()
+        self._json(import_topics(self.store, slug, self._read_body(), preview=action == "preview"))
+
     @route("PATCH", r"/api/projects/([^/]+)")
     def api_project_update(self, slug):
         self._json(self.store.update_project(slug, self._json_body()))

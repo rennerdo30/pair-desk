@@ -28,6 +28,8 @@ jobs:
           node-version: 22
       - name: Unit tests
         run: python -m unittest discover -s tests -v
+      - name: Topic transfer dialog checks
+        run: node scripts/test-transfer.mjs
       - name: Smoke test (real server process)
         run: python scripts/smoke.py
       - name: Launcher (macOS, Linux)

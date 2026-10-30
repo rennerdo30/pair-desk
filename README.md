@@ -191,6 +191,11 @@ agent sessions on that folder first. `--check` only checks the file. To move a d
 machine: `backup`, copy the zip, `restore` there (it lists repo links whose folders do not exist
 there; link them again with `pair-desk link`), then `pair-desk install`.
 
+**Selected topics:** the web UI's project toolbar has **Export** and **Import**.
+Export uses the list filters, search and persistent checkboxes to download a ZIP
+with complete topic history and attachments. Import previews the dataset and
+appends new copies without overwriting existing topics. See [topic transfer](docs/topic-transfer.md).
+
 `python desk.py export --project mygame --out mygame.json` writes one project as readable JSON
 (attachments as metadata).
 
