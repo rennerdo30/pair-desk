@@ -1,6 +1,7 @@
 import io
 import json
 import zipfile
+from pathlib import Path
 from unittest.mock import patch
 
 from helpers import PNG, StoreCase
@@ -10,6 +11,37 @@ from pair_desk.transfer import export_topics, import_topics, read_archive
 
 
 class TransferTests(StoreCase):
+    def test_activity_shapes_are_validated_before_persistence(self):
+        blob = self.fixture()
+        for action, detail in [("edited", {"fields": 1}), ("edited", {"owner_original": {"body": 1}}),
+                               ("merged", {"body": 1}), ("merged", {"location": {"commands": 1}})]:
+            bad = self.rewrite(blob, lambda m: m["tables"]["activity"][0].update(action=action, detail=json.dumps(detail)))
+            with self.subTest(action=action, detail=detail), self.assertRaises(Invalid):
+                import_topics(self.store, "destination", bad, preview=False)
+        self.assertEqual(self.store.get_project("destination")["issue_count"], 1)
+
+    def test_unresolved_attachment_references_are_refused(self):
+        blob = self.fixture()
+        bad = self.rewrite(blob, lambda m: m["tables"]["issues"][0].update(body="![foreign](/api/attachments/999)"))
+        with self.assertRaises(Invalid):
+            import_topics(self.store, "destination", bad, preview=False)
+        self.store.update_issue("MG-1", {"body": "![foreign](/api/attachments/999)"})
+        with self.assertRaises(Invalid):
+            export_topics(self.store, "mygame", ["MG-1"])
+
+    def test_partial_attachment_write_is_cleaned_up(self):
+        blob = self.fixture()
+        existing = {p for p in self.store.attachments_dir.rglob("*") if p.is_file()}
+        write = Path.write_bytes
+        def fail(path, data):
+            write(path, data[:10])
+            raise OSError("injected partial write")
+        with patch.object(Path, "write_bytes", fail), self.assertRaises(OSError):
+            import_topics(self.store, "destination", blob, preview=False)
+        self.assertEqual({p for p in self.store.attachments_dir.rglob("*") if p.is_file()}, existing)
+        self.assertEqual(self.store.get_project("destination")["issue_count"], 1)
+        self.assertEqual(self.store.create_issue("destination", {"title": "Next"})["id"], "DT-2")
+
     def fixture(self):
         self.store.create_issue("mygame", {"title": "Parent", "body": "Full body", "tags": ["tag"]})
         self.store.create_issue("mygame", {"title": "Child"})
@@ -111,6 +143,10 @@ class TransferTests(StoreCase):
         result = import_topics(self.store, "destination", blob, preview=False)
         issue = self.store.get_issue(result["created"][0])
         self.assertEqual(issue["body"], f"![shot](/api/attachments/{issue['attachments'][0]['id']})")
+        blob = self.rewrite(blob, lambda m: m["tables"]["activity"][0].update(action="edited", detail=json.dumps({"fields": ["body"], "owner_original": {"body": "![shot](/api/attachments/1)"}})))
+        result = import_topics(self.store, "destination", blob, preview=False)
+        issue = self.store.get_issue(result["created"][0])
+        self.assertEqual(issue["activity"][0]["detail"]["owner_original"]["body"], f"![shot](/api/attachments/{issue['attachments'][0]['id']})")
 
     def test_shared_reservation_exhaustion_is_atomic(self):
         blob = self.fixture()
@@ -134,6 +170,9 @@ class TransferTests(StoreCase):
         result = import_topics(self.store, "destination", blob, preview=False)
         source = result["created"][2]
         self.assertEqual(self.store.get_issue(source, follow=False)["merged_into"], result["created"][0])
+        target = self.store.get_issue(result["created"][0])
+        merged = next(a for a in target["activity"] if a["action"] == "merged")
+        self.assertEqual(merged["detail"]["from"], source)
         self.store.unmerge(source)
         self.assertEqual(self.store.get_issue(source)["comments"][0]["text"], "Source comment")
         self.assertEqual(self.store.get_issue(result["created"][3])["parent"], source)

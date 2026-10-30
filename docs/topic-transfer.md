@@ -11,6 +11,9 @@ provenance, so the dataset has no dangling relationships. This can add topics
 outside the filter. The ZIP contains topic fields, plans, comments, verdicts,
 activity, build evidence, command history and all attachment files. Missing
 attachment files refuse export rather than producing an incomplete dataset.
+Local attachment links must resolve within the dataset. If a topic links to a
+different topic's attachment, include that topic too; unresolved links refuse
+export and import so they cannot display unrelated destination files.
 
 Choose **Import** in the destination project and select the ZIP. Review the
 source project, full topic list and attachment count, then choose **Import topics**.

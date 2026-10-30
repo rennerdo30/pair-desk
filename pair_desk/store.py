@@ -2582,8 +2582,8 @@ class Store:
             ext = ""
         rel = rel_dir / f"{uuid.uuid4().hex}{ext}"
         target = self.data_dir / rel
-        target.write_bytes(blob)
         try:
+            target.write_bytes(blob)
             cur = c.execute(
                 "INSERT INTO attachments(issue_id, comment_id, filename, mime, size, stored_path, created_at)"
                 " VALUES (?,?,?,?,?,?,?)",

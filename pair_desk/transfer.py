@@ -12,7 +12,7 @@ import json
 import re
 import zipfile
 
-from .store import Conflict, Invalid, MAX_ATTACHMENT_BYTES, MAX_PLAN_STEPS, normalize_step
+from .store import Conflict, Invalid, MAX_ATTACHMENT_BYTES, MAX_PLAN_STEPS, normalize_step, normalize_location
 
 FORMAT = "pair-desk-topics"
 MAX_ZIP = 80 * 1024 * 1024
@@ -25,6 +25,49 @@ TABLES = {
     "attachments": "id issue_id comment_id filename mime size stored_path created_at merged_from",
     "commands": "id project_id issue_id command created_by created_at expires_at delivered_at client",
 }
+ATTACHMENT_LINK = re.compile(r"/api/attachments/([0-9]+)(?![0-9])")
+
+
+def _validate_activity(action, detail):
+    """Check the structured values consumed by the web timeline, not only JSON syntax."""
+    if not isinstance(detail, dict):
+        raise Invalid("invalid activity detail")
+    string_fields = {
+        "created": "status build", "status": "from to build", "build": "label previous",
+        "attached": "filename", "detached": "filename", "command_sent": "command",
+        "command_delivered": "client", "plan": "op text from to commit note verification old_text",
+        "parent": "parent previous", "child": "op child", "merged_into": "into prev_status",
+        "unmerged": "source from status", "merged": "from title body kind status source area created_at",
+    }
+    if any(k in detail and detail[k] is not None and not isinstance(detail[k], str)
+           for k in string_fields.get(action, "").split()):
+        raise Invalid("invalid activity text fields")
+    for k in ({"edited": ["fields"], "plan": ["steps"], "merged": ["tags"]}.get(action, [])):
+        if k in detail and (not isinstance(detail[k], list) or any(not isinstance(v, str) for v in detail[k])):
+            raise Invalid("invalid activity list fields")
+    if action == "edited" and "owner_original" in detail:
+        original = detail["owner_original"]
+        if not isinstance(original, dict) or any(k in original and not isinstance(original[k], str) for k in ("title", "body")):
+            raise Invalid("invalid original owner report")
+    if action == "merged" and "location" in detail:
+        if not isinstance(detail["location"], dict) or normalize_location(detail["location"]) != detail["location"]:
+            raise Invalid("invalid merge history location")
+    if action == "merged_into" and (not isinstance(detail.get("children", []), list) or any(type(x) is not int for x in detail.get("children", []))):
+        raise Invalid("invalid merge history children")
+
+
+def _validate_links(tables):
+    available = {r["id"] for r in tables["attachments"]}
+    texts = [r[k] for r in tables["issues"] for k in ("body", "plan")]
+    texts += [r["text"] for r in tables["comments"]]
+    for row in tables["activity"]:
+        detail = json.loads(row["detail"])
+        if row["action"] == "merged":
+            texts.append(detail.get("body") or "")
+        if row["action"] == "edited":
+            texts.append((detail.get("owner_original") or {}).get("body") or "")
+    if any(int(match[1]) not in available for text in texts for match in ATTACHMENT_LINK.finditer(text)):
+        raise Invalid("a local attachment link is outside this dataset; include its topic or remove the link")
 
 
 def _encoded(value):
@@ -58,6 +101,7 @@ def export_topics(store, slug, keys):
         tables = {t: [r for r in rs if r["id" if t == "issues" else "issue_id"] in selected] for t, rs in tables.items()}
         if sum(map(len, tables.values())) > MAX_ROWS:
             raise Invalid("too many history records for one archive; export a smaller selection")
+        _validate_links(tables)
         manifest = {"format": FORMAT, "version": 1, "project": {k: project[k] for k in ("slug", "name", "prefix")},
                     "selected": keys, "tables": tables, "files": {}}
         output = io.BytesIO()
@@ -163,14 +207,12 @@ def read_archive(store, blob):
                         raise Invalid("history references a missing topic")
                     if t == "activity":
                         detail = json.loads(r["detail"])
-                        if not isinstance(detail, dict):
-                            raise Invalid("invalid activity detail")
-                        if r["action"] == "merged_into" and (not isinstance(detail.get("children", []), list) or any(type(x) is not int for x in detail.get("children", []))):
-                            raise Invalid("invalid merge history children")
+                        _validate_activity(r["action"], detail)
                     if t == "comments" and r["verdict"] not in (None, "passed", "failed"):
                         raise Invalid("invalid historical verdict")
                     if t == "attachments" and r["comment_id"] is not None and (r["comment_id"] not in comments or comments[r["comment_id"]]["issue_id"] != r["issue_id"]):
                         raise Invalid("attachment references another topic's comment")
+            _validate_links(tables)
             files = manifest["files"]
             expected = {f"files/{r['id']}" for r in tables["attachments"]}
             if set(files) != expected or set(names) != expected | {"manifest.json"}:
@@ -226,7 +268,7 @@ def import_topics(store, slug, blob, *, preview=True):
             c.execute("UPDATE projects SET next_number=? WHERE id=?", (number, project["id"]))
             for row in tables["issues"]:
                 c.execute("UPDATE issues SET parent_id=?, merged_into=? WHERE id=?", (mapping.get(row["parent_id"]), mapping.get(row["merged_into"]), mapping[row["id"]]))
-            comment_map = {}
+            comment_map, activity_map = {}, {}
             for table in ("comments", "activity"):
                 for row in tables[table]:
                     values = {**row, "issue_id": mapping[row["issue_id"]], "merged_from": mapping.get(row["merged_from"])}
@@ -239,6 +281,8 @@ def import_topics(store, slug, blob, *, preview=True):
                     newid = c.execute(f"INSERT INTO {table} ({','.join(cols)}) VALUES ({','.join('?' for _ in cols)})", list(values.values())).lastrowid
                     if table == "comments":
                         comment_map[row["id"]] = newid
+                    else:
+                        activity_map[row["id"]] = newid
             attachment_map = {}
             for row in tables["attachments"]:
                 aid = store._store_attachment(c, mapping[row["issue_id"]], slug, comment_map.get(row["comment_id"]), row["filename"], row["mime"], blobs[row["id"]], "owner", store.now(), log=False)
@@ -247,11 +291,25 @@ def import_topics(store, slug, blob, *, preview=True):
                 attachment_map[row["id"]] = aid
                 c.execute("UPDATE attachments SET created_at=?, merged_from=? WHERE id=?", (row["created_at"], mapping.get(row["merged_from"]), aid))
             def relink(text):
-                return re.sub(r"/api/attachments/([0-9]+)(?![0-9])", lambda m: f"/api/attachments/{attachment_map.get(int(m[1]), m[1])}", text)
+                return ATTACHMENT_LINK.sub(lambda m: f"/api/attachments/{attachment_map[int(m[1])]}", text)
             for row in tables["issues"]:
                 c.execute("UPDATE issues SET body=?, plan=? WHERE id=?", (relink(row["body"]), relink(row["plan"]), mapping[row["id"]]))
             for row in tables["comments"]:
                 c.execute("UPDATE comments SET text=? WHERE id=?", (relink(row["text"]), comment_map[row["id"]]))
+            source_keys = {f"{manifest['project']['prefix']}-{row['number']}": keys[row["id"]] for row in tables["issues"]}
+            # The merged card's `from` drives its Unmerge button; other key strings
+            # are historical evidence, retained verbatim alongside original rows.
+            link_fields = {"merged": ("from",)}
+            for row in tables["activity"]:
+                detail = json.loads(c.execute("SELECT detail FROM activity WHERE id=?", (activity_map[row["id"]],)).fetchone()[0])
+                for field in link_fields.get(row["action"], ()):
+                    if field in detail:
+                        detail[field] = source_keys.get(detail[field], detail[field])
+                if row["action"] == "merged" and detail.get("body"):
+                    detail["body"] = relink(detail["body"])
+                if row["action"] == "edited" and (detail.get("owner_original") or {}).get("body"):
+                    detail["owner_original"]["body"] = relink(detail["owner_original"]["body"])
+                c.execute("UPDATE activity SET detail=? WHERE id=?", (json.dumps(detail), activity_map[row["id"]]))
             originals = {r["id"]: {t: [] for t in tables} for r in tables["issues"]}
             for t, rows in tables.items():
                 for r in rows:
