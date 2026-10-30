@@ -486,6 +486,14 @@ body.resizing, body.resizing * { cursor: col-resize !important; user-select: non
   border-radius: 14px; background: var(--surface); color: var(--text); box-shadow: var(--shadow-lg); overflow: hidden;
 }
 .dialog-narrow { width: min(460px, calc(100vw - 32px)); }
+.transfer-dialog { width: min(1000px, calc(100vw - 32px)); }
+.transfer-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.transfer-rows { max-height: 40vh; overflow-y: auto; border: 1px solid var(--line); border-radius: 8px; }
+.transfer-row { display: flex; align-items: center; gap: 10px; padding: 10px; border-bottom: 1px solid var(--line); cursor: pointer; }
+.transfer-row > span:not(.pill) { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.transfer-row small, #transfer-count { color: var(--muted); }
+.transfer-row:has(input:checked) { background: var(--st-open-bg); }
+#transfer-error { color: var(--st-failed); }
 .dialog::backdrop { background: rgba(20, 16, 10, .45); backdrop-filter: blur(2px); }
 .dialog form { display: flex; flex-direction: column; max-height: calc(100vh - 50px); }
 .dialog-head { display: flex; align-items: center; padding: 16px 20px 6px; }

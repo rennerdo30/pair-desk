@@ -546,10 +546,9 @@ function renderWelcome() {
 }
 
 // ------------------------------------------------------------------------------ list
-function listQuery() {
-  const f = S.filters;
+function listQuery(f = S.filters, view = S.view, limit = S.limit, offset = 0) {
   const p = new URLSearchParams();
-  const backlog = S.view === "backlog";
+  const backlog = view === "backlog";
   if (backlog) p.set("status", BACKLOG_STATUSES.join(","));
   else if (f.merged) p.set("merged", "1");
   else if (f.status.length) p.set("status", f.status.join(","));
@@ -559,7 +558,8 @@ function listQuery() {
   if (f.seed) p.set("seed", f.seed);
   if (f.q) p.set("q", f.q);
   p.set("sort", backlog ? "backlog" : f.sort);
-  p.set("limit", String(backlog ? 5000 : S.limit));
+  p.set("limit", String(backlog ? 5000 : limit));
+  if (offset) p.set("offset", String(offset));
   // Rows need metadata and plan progress; descriptions and full plans load on opening detail.
   p.set("summary", "1");
   return p.toString();
@@ -618,16 +618,14 @@ function chip({ group, value, label, count, on, color, icon }) {
     ${color ? '<span class="dot"></span>' : ""}${icon || ""}<span>${esc(label)}</span>${count !== undefined ? `<span class="count">${count}</span>` : ""}</button>`;
 }
 
-function renderFilters() {
-  const c = S.list.counts || {};
-  const f = S.filters;
+function renderFilters(target = $("#filters"), f = S.filters, c = S.list.counts || {}, exporting = false) {
   const sc = c.status || {}, kc = c.kind || {}, pc = c.priority || {}, ac = c.area || {}, seedc = c.seed || {};
   const seeds = [...new Set([...Object.keys(seedc), ...(f.seed ? [String(f.seed)] : [])])].sort((a, b) => Number(a) - Number(b));
   const allCount = Object.values(sc).reduce((a, b) => a + b, 0);
   const areas = [...new Set([...(S.project?.areas || []), ...Object.keys(ac).filter(Boolean)])];
-  const backlog = S.view === "backlog";
-  $("#filters").innerHTML = `
-    <div class="chip-row view-row">
+  const backlog = !exporting && S.view === "backlog";
+  target.innerHTML = `
+    ${exporting ? "" : `<div class="chip-row view-row">
       <div class="segmented view-switch" role="tablist" aria-label="View">
         <button type="button" role="tab" data-view="list" aria-selected="${S.view === "list"}" class="${S.view === "list" ? "on" : ""}">Triage</button>
         <button type="button" role="tab" data-view="backlog" aria-selected="${backlog}" class="${backlog ? "on" : ""}" title="Backlog (b)">Backlog</button>
@@ -635,8 +633,10 @@ function renderFilters() {
       </div>
       <span class="row-spacer"></span>
       ${currentBuildHtml()}
+      <button type="button" class="btn btn-sm btn-quiet" data-transfer="export">Export</button>
+      <button type="button" class="btn btn-sm btn-quiet" data-transfer="import">Import</button>
       <a class="btn btn-sm btn-quiet" href="#/${esc(S.slug)}/${HANDOFF}" title="Project handoff (h)">${ICON.doc}Handoff</a>
-    </div>
+    </div>`}
     ${backlog ? `<div class="backlog-hint">Open and in-progress work by priority, then size, then area. ${sc.parked ? `<button type="button" class="linkish" data-parked="1">${sc.parked} parked</button>` : ""}</div>` : `<div class="chip-row" role="group" aria-label="Status">
       ${STATUSES.map((s) => chip({ group: "status", value: s, label: STATUS_LABEL[s], count: sc[s] || 0, on: f.status.includes(s), color: true })).join("")}
       ${chip({ group: "status", value: "*", label: "All", count: allCount, on: !f.status.length && !f.merged })}
@@ -661,6 +661,120 @@ function renderFilters() {
         ${Object.entries(SORTS).map(([k, v]) => `<option value="${k}"${k === f.sort ? " selected" : ""}>${v}</option>`).join("")}
       </select>`}
     </div>`;
+}
+
+async function openTransferDialog(mode) {
+  const dlg = $("#transfer-dialog"), slug = S.slug;
+  const base = `/api/projects/${encodeURIComponent(slug)}/topics`;
+  const exporting = mode === "export";
+  const selected = new Set(), f = structuredClone(S.filters);
+  if (S.view === "backlog") Object.assign(f, { status: [...BACKLOG_STATUSES], merged: false, sort: "backlog" });
+  let rows = [], total = 0, offset = 0, seq = 0, file = null, busy = false, closed = false;
+  dlg.onclose = () => { closed = true; ++seq; };
+  dlg.innerHTML = `<form method="dialog">
+    <div class="dialog-head"><h2>${exporting ? "Export topics" : "Import topics"} · ${esc(S.project.name)}</h2><button class="icon-btn" value="cancel" aria-label="Close">${ICON.close}</button></div>
+    <div class="dialog-body">
+      <p class="hint">${exporting ? "Select topics across searches and filters. Related parent, child and merged topics are included so their history stays connected." : "Choose a Pair Desk topics ZIP. Review its contents before importing new copies into this project. Existing topics stay untouched."}</p>
+      ${exporting ? `<input type="search" id="transfer-search" placeholder="Search topics…" aria-label="Search export topics" value="${esc(f.q)}"><div id="transfer-filters"></div><div class="transfer-tools"><button type="button" class="btn btn-sm" data-pick="page">Select this page</button><button type="button" class="btn btn-sm" data-pick="clear">Clear selection</button><span id="transfer-count" role="status"></span></div><div id="transfer-rows" class="transfer-rows"></div><button type="button" class="btn btn-sm" id="transfer-more" hidden>Load more</button>` : `<input type="file" id="transfer-file" accept=".zip,application/zip" aria-label="Topic archive"><div id="transfer-preview"></div>`}
+      <p id="transfer-error" role="alert"></p>
+    </div>
+    <div class="dialog-foot"><button class="btn" value="cancel">Cancel</button><button type="submit" class="btn btn-primary" id="transfer-submit" value="ok" disabled>${exporting ? "Export ZIP" : "Import topics"}</button></div>
+  </form>`;
+  const error = $("#transfer-error", dlg), submit = $("#transfer-submit", dlg);
+  const counts = () => {
+    $("#transfer-count", dlg).textContent = `${selected.size} selected · ${rows.length} of ${total} shown`;
+    submit.disabled = busy || !selected.size;
+  };
+  const drawRows = () => {
+    $("#transfer-rows", dlg).innerHTML = rows.map(i => `<label class="transfer-row"><input type="checkbox" data-topic="${esc(i.id)}" ${selected.has(i.id) ? "checked" : ""}><span class="pill s-${i.status}">${esc(STATUS_LABEL[i.status])}</span><span>${esc(i.title)}</span><small>${esc(i.id)}</small></label>`).join("");
+    counts();
+  };
+  const load = async (more = false) => {
+    const ticket = ++seq;
+    if (!more) offset = 0;
+    error.textContent = "";
+    try {
+      const res = await api("GET", `/api/projects/${encodeURIComponent(slug)}/issues?${listQuery(f, "list", PAGE, offset)}`);
+      if (closed || !dlg.open || ticket !== seq) return;
+      rows = more ? [...rows, ...res.issues] : res.issues;
+      total = res.total; offset = rows.length;
+      const root = $("#transfer-filters", dlg);
+      renderFilters(root, f, res.counts || {}, true);
+      for (const el of $$("[id]", root)) el.id = `transfer-${el.id}`;
+      $("#transfer-more", dlg).hidden = rows.length >= total;
+      drawRows();
+    } catch (e) { if (ticket === seq) error.textContent = e.message; }
+  };
+  dlg.onclick = e => {
+    const pick = e.target.closest("[data-pick]")?.dataset.pick;
+    if (pick) { if (pick === "clear") selected.clear(); else rows.forEach(i => selected.add(i.id)); drawRows(); }
+    const chip = e.target.closest("#transfer-filters .chip");
+    if (chip) {
+      const { group, value } = chip.dataset;
+      if (group === "merged") f.merged = !f.merged;
+      else {
+        if (group === "status") f.merged = false;
+        if (value === "*") f[group] = [];
+        else if (e.shiftKey || e.ctrlKey || e.metaKey) f[group] = f[group].length === 1 && f[group][0] === value ? [] : [value];
+        else f[group] = f[group].includes(value) ? f[group].filter(v => v !== value) : [...f[group], value];
+      }
+      load();
+    }
+    if (e.target.id === "transfer-more") load(true);
+  };
+  dlg.oninput = e => { if (e.target.id === "transfer-search") { f.q = e.target.value; load(); } };
+  dlg.onchange = async e => {
+    if (e.target.dataset.topic) {
+      if (e.target.checked) selected.add(e.target.dataset.topic); else selected.delete(e.target.dataset.topic);
+      counts();
+    }
+    const field = { "transfer-area-filter": "area", "transfer-seed-filter": "seed", "transfer-sort-select": "sort" }[e.target.id];
+    if (field) { f[field] = e.target.value; load(); }
+    if (e.target.id === "transfer-file") {
+      const ticket = ++seq;
+      file = null; submit.disabled = true;
+      $("#transfer-preview", dlg).textContent = ""; error.textContent = "";
+      const candidate = e.target.files[0];
+      if (!candidate) return;
+      if (candidate.size > 80 * 1024 * 1024) { error.textContent = "Choose a ZIP smaller than 80 MB."; return; }
+      try {
+        const res = await fetch(`${base}/preview`, { method: "POST", headers: { "Content-Type": "application/zip", "X-Pair-Desk-Token": DESK_TOKEN }, body: candidate });
+        const preview = await res.json();
+        if (closed || !dlg.open || ticket !== seq) return;
+        if (!res.ok) throw new Error(preview.error);
+        $("#transfer-preview", dlg).innerHTML = `<p><strong>${preview.topics} topics · ${preview.attachments} attachments</strong> from ${esc(preview.source.name)}</p><p>${esc(preview.notice)}</p><ul>${preview.titles.map(t => `<li>${esc(t)}</li>`).join("")}</ul>`;
+        if (preview.already_imported) throw new Error("This exact archive was already imported into this project.");
+        file = candidate; submit.disabled = false;
+      } catch (e) { if (ticket === seq) error.textContent = e.message; }
+    }
+  };
+  $("form", dlg).onsubmit = async e => {
+    if (e.submitter?.value !== "ok") return;
+    e.preventDefault();
+    if (busy) return;
+    busy = true; submit.disabled = true; error.textContent = "";
+    try {
+      if (exporting) {
+        const res = await fetch(`${base}/export`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ids: [...selected] }) });
+        if (!res.ok) throw new Error((await res.json()).error);
+        const url = URL.createObjectURL(await res.blob());
+        const link = document.createElement("a");
+        link.href = url; link.download = `${slug}-topics.zip`; link.click();
+        setTimeout(() => URL.revokeObjectURL(url), 30000);
+      } else {
+        if (!file) throw new Error("Choose and preview an archive first.");
+        const res = await fetch(`${base}/import`, { method: "POST", headers: { "Content-Type": "application/zip", "X-Pair-Desk-Token": DESK_TOKEN }, body: file });
+        const result = await res.json();
+        if (!res.ok) throw new Error(result.error);
+        toast(`Imported ${result.created.length} topics`);
+        if (S.slug === slug) loadList();
+      }
+      if (!closed) dlg.close();
+    } catch (e) { if (!closed) error.textContent = e.message; }
+    finally { busy = false; if (!closed) submit.disabled = exporting ? !selected.size : !file; }
+  };
+  dlg.showModal();
+  if (exporting) load();
 }
 
 function progressBadge(p, icon, title, cls = "") {
@@ -1946,6 +2060,8 @@ function bindEvents() {
   });
 
   $("#filters").addEventListener("click", (e) => {
+    const transfer = e.target.closest("[data-transfer]");
+    if (transfer) { openTransferDialog(transfer.dataset.transfer); return; }
     const v = e.target.closest("[data-view]");
     if (v) { setView(v.dataset.view); return; }
     if (e.target.closest("[data-parked]")) { setView("list"); setFilter((f) => { f.status = ["parked"]; }); return; }
