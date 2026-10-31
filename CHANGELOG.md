@@ -6,7 +6,15 @@ and the project uses [Semantic Versioning](https://semver.org/). The version liv
 
 ## [Unreleased]
 
+## [1.13.0] - 2026-10-31
+
 ### Added
+
+- Project-level topic ZIP export/import in the web UI: normal list filters and search,
+  persistent checkbox selection, complete history and attachments, and a validated preview
+  before append-only import. Related parent/merge records are included. Existing topics stay
+  untouched; imported commands remain inert and builds require local registration.
+  See `docs/topic-transfer.md`.
 
 - Optional per-project sharing across PCs through a dedicated `pair-desk-data` branch in the
   project's existing Git repository (GitHub, GitLab or any Git server; no hub). Off by default:
