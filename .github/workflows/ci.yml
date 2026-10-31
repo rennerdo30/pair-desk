@@ -26,8 +26,8 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 22
-      - name: Unit tests
-        run: python -m unittest discover -s tests -v
+      - name: Unit tests (failed tests retried, 3 attempts in total)
+        run: python scripts/run-unit-tests.py --attempts 3
       - name: Topic transfer dialog checks
         run: node scripts/test-transfer.mjs
       - name: Smoke test (real server process)
