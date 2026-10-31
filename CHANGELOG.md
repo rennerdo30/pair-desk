@@ -8,6 +8,13 @@ and the project uses [Semantic Versioning](https://semver.org/). The version liv
 
 ## [1.13.0] - 2026-10-31
 
+### Known limitations
+
+- PD-21: cross-project topic imports can leave historical relationship references that
+  prevent Git sharing snapshots or sharing setup in the destination project. Keep
+  destinations with imported topics local-only until this compatibility issue is fixed.
+  Local topic use and archived data are preserved; sharing is off by default.
+
 ### Added
 
 - Project-level topic ZIP export/import in the web UI: normal list filters and search,
