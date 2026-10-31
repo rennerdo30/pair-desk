@@ -1,5 +1,11 @@
 # Export and import selected topics
 
+**1.13.0 limitation (PD-21):** keep projects receiving imported topics local-only.
+Historical relationship references from another project can prevent Git sharing
+snapshots or sharing setup. Local topic use and archived data remain available.
+Do not import into a project with sharing enabled until this compatibility issue
+is fixed.
+
 In a project's Triage, Backlog or Board view, choose **Export**. The popup starts
 with the current list filters and search. Use the same status, kind, priority,
 area, world and sort controls to find topics. Checkboxes retain their selection
