@@ -6,6 +6,16 @@ and the project uses [Semantic Versioning](https://semver.org/). The version liv
 
 ## [Unreleased]
 
+### Documentation
+
+- The README is now a short front page: what Pair Desk does, how it works, features, install,
+  quick start, the game integration and the security model, with fresh 1.13.0 screenshots. The
+  reference sections moved unchanged into `docs/install.md`, `docs/web-ui.md`, `docs/api.md`,
+  `docs/cli.md`, `docs/data.md` and `docs/development.md`.
+- New project homepage in `website/` (static, no build step, strict CSP) with an interactive
+  walk through one check, real UI captures in light and dark, and a manual-only GitHub Pages
+  workflow.
+
 ## [1.13.0] - 2026-10-31
 
 ### Known limitations
