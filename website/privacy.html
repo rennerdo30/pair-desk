@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Privacy · Pair Desk</title>
+  <meta name="color-scheme" content="light dark">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self'; style-src 'self'; base-uri 'none'; form-action 'none'">
+  <link rel="canonical" href="https://pair-desk.renner.dev/privacy.html">
+  <link rel="icon" href="assets/pair-desk-icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="top">
+    <a class="brand" href="./" aria-label="Pair Desk home">
+      <img src="assets/pair-desk-icon.svg" width="30" height="30" alt="">
+      <span>Pair Desk</span>
+    </a>
+    <nav aria-label="Site">
+      <a href="./#install">Install</a>
+      <a class="nav-gh" href="https://github.com/rennerdo30/pair-desk">GitHub</a>
+    </nav>
+  </header>
+
+  <main class="doc">
+    <h1>Privacy</h1>
+
+    <h2>This website</h2>
+    <p>This site sets no cookies, uses no analytics and loads nothing from other sites except one request: your browser asks the public GitHub API for the newest Pair Desk release, so the install section can name it. GitHub receives that request like any other visit to GitHub. The site is hosted on GitHub Pages, which logs visitor IP addresses in its own server logs; see the <a href="https://docs.github.com/en/site-policy/privacy-policies/github-general-privacy-statement">GitHub privacy statement</a>.</p>
+
+    <h2>Pair Desk</h2>
+    <p>Pair Desk runs on your computer and has no account and no telemetry. Its server listens on <code>127.0.0.1</code> only, and everything it stores stays in one data folder on your machine. It sends nothing anywhere unless you turn on Git project sharing, which pushes the projects you choose to a data branch in a Git repository you name, with that repository's own authentication.</p>
+
+    <h2>Contact</h2>
+    <p>Write to <a href="mailto:support@renner.dev">support@renner.dev</a>, or open an issue on <a href="https://github.com/rennerdo30/pair-desk/issues">GitHub</a>.</p>
+  </main>
+
+  <footer class="foot">
+    <p><img src="assets/pair-desk-icon.svg" width="20" height="20" alt=""> Pair Desk, a project by <a href="https://github.com/rennerdo30">rennerdo30</a>.</p>
+    <p><a href="./">Home</a> <a href="https://github.com/rennerdo30/pair-desk">GitHub</a></p>
+  </footer>
+</body>
+</html>

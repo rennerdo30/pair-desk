@@ -1,0 +1,361 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pair Desk: the playtest desk you share with your coding agents</title>
+  <meta name="description" content="Pair Desk is a free, local playtest desk, backlog and handoff for game developers and their coding agents. Agents file checks with the command that takes you to the spot, your game teleports you there, and you answer Passed or Still broken.">
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#f3f1ec" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#141517" media="(prefers-color-scheme: dark)">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self'; style-src 'self'; script-src 'self'; connect-src https://api.github.com; base-uri 'none'; form-action 'none'">
+  <link rel="canonical" href="https://pair-desk.renner.dev/">
+  <link rel="icon" href="assets/pair-desk-icon.svg" type="image/svg+xml">
+  <link rel="manifest" href="site.webmanifest">
+  <meta property="og:title" content="Pair Desk">
+  <meta property="og:description" content="You play the game, your agents write the code. Pair Desk is the table between you.">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://pair-desk.renner.dev/">
+  <meta property="og:image" content="https://pair-desk.renner.dev/assets/shots/triage-light.webp">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="stylesheet" href="style.css">
+  <script src="boot.js"></script>
+  <script src="site.js" defer></script>
+  <script src="releases.js" defer></script>
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+
+  <header class="top">
+    <a class="brand" href="#top" aria-label="Pair Desk home">
+      <img src="assets/pair-desk-icon.svg" width="30" height="30" alt="">
+      <span>Pair Desk</span>
+    </a>
+    <nav aria-label="Sections">
+      <a href="#loop">The loop</a>
+      <a href="#desk">The desk</a>
+      <a href="#game">Your game</a>
+      <a href="#agents">Agents</a>
+      <a href="#install">Install</a>
+      <a class="nav-gh" href="https://github.com/rennerdo30/pair-desk">GitHub</a>
+    </nav>
+  </header>
+
+  <main id="main">
+    <section class="hero" id="top" aria-labelledby="hero-title">
+      <div class="hero-copy">
+        <p class="kicker"><span class="pill pill-to_check">Free and open source</span> For game developers and their coding agents</p>
+        <h1 id="hero-title">You play the game. Your agents write the code. <em>This is the table between you.</em></h1>
+        <p class="lede">Pair Desk is a local playtest desk, backlog and handoff. Agents file checks with the command that takes you to the exact spot; one click teleports your running game there, and you answer <strong>Passed</strong> or <strong>Still broken</strong>. Their next prompt already knows.</p>
+        <div class="cta">
+          <a class="btn btn-primary" href="#install">Install Pair Desk</a>
+          <a class="btn btn-ghost" href="https://github.com/rennerdo30/pair-desk">View the source</a>
+        </div>
+        <p class="works">Works with <b>Claude Code</b>, <b>Codex</b>, <b>opencode</b>, <b>Google Antigravity</b> and <b>Meta Muse Code</b>. Any engine.</p>
+      </div>
+    </section>
+
+    <section class="loop" id="loop" aria-labelledby="loop-title">
+      <h2 id="loop-title" class="sr-only">One check, start to finish</h2>
+      <figure class="stage" data-step="1" aria-labelledby="stage-caption">
+        <div class="steps" role="group" aria-label="Show the step">
+          <button type="button" data-goto="1" aria-pressed="true"><span>1</span> Agent files a check</button>
+          <button type="button" data-goto="2" aria-pressed="false"><span>2</span> Send to game</button>
+          <button type="button" data-goto="3" aria-pressed="false"><span>3</span> Still broken</button>
+          <button type="button" data-goto="4" aria-pressed="false"><span>4</span> Fixed. Passed.</button>
+          <button type="button" class="play" data-play aria-pressed="false" aria-label="Play the loop" title="Play the loop"><span aria-hidden="true"></span></button>
+        </div>
+
+        <div class="panes">
+          <!-- the agent -->
+          <section class="pane pane-agent" aria-label="The agent's session">
+            <header class="pane-head"><span class="dot"></span>claude · ~/mygame</header>
+            <div class="term">
+              <p class="ln s1 s2 s3 s4"><span class="c"># Pair Desk (MyGame): 1 new report, 0 failed checks, …</span></p>
+              <p class="ln s1 s2 s3 s4"><span class="p">$</span> git commit -m "Round the lava flow tips"</p>
+              <p class="ln s1 s2 s3 s4 dim">[main 5ea28d6] Round the lava flow tips</p>
+              <p class="ln s1 s2 s3 s4"><span class="t">create_issue</span> MG-1 <span class="s">"Lava flows end in rounded tips"</span></p>
+              <p class="ln s1 s2 s3 s4 dim">&nbsp;&nbsp;commands: /goto 1240 -380 42.5 yaw 90; /time 17:30</p>
+              <p class="ln s1 s2 s3 s4"><span class="t">set_status</span> MG-1 to_check <span class="ok">✓</span></p>
+              <p class="ln s3 s4 hook"><span class="c">Pair Desk (MyGame): owner activity since this session last looked:</span><br>- MG-1 owner: STILL BROKEN (just now): "the east flow is still square"</p>
+              <p class="ln s3 s4"><span class="t">set_plan</span> MG-1 4 steps, + "Taper the east flow" <span class="ok">✓</span></p>
+              <p class="ln s3 s4"><span class="p">$</span> git commit -m "Taper the east flow as well"</p>
+              <p class="ln s3 s4 dim">[main 8c21f0a] Taper the east flow as well</p>
+              <p class="ln s4"><span class="t">progress</span> MG-1 step 4 done 8c21f0a <span class="ok">✓</span></p>
+              <p class="ln s4"><span class="t">set_status</span> MG-1 to_check <span class="ok">✓</span></p>
+              <p class="ln s4"><span class="t">set_status</span> MG-1 passed <span class="no">refused: only the owner gives that verdict</span></p>
+              <p class="ln caret s1 s2 s3 s4"><span class="p">$</span> <i></i></p>
+            </div>
+          </section>
+
+          <!-- the desk -->
+          <section class="pane pane-desk" aria-label="The check on Pair Desk">
+            <header class="pane-head"><span class="dot"></span>Pair Desk · 127.0.0.1:8765</header>
+            <div class="card">
+              <div class="card-top">
+                <span class="status st-to_check s-show1 s-show2">To check</span>
+                <span class="status st-failed s-show3">Failed</span>
+                <span class="status st-passed s-show4">Passed</span>
+                <span class="id">MG-1</span>
+                <span class="prio">P1</span>
+              </div>
+              <h3 class="card-title">Lava flows end in rounded tips</h3>
+              <div class="plan">
+                <span class="plan-label">Plan <b class="s-show1 s-show2">3/3</b><b class="s-show3">3/4</b><b class="s-show4">4/4</b></span>
+                <span class="bar"><i></i></span>
+              </div>
+              <div class="where">
+                <code>/goto 1240 -380 42.5 yaw 90; /time 17:30</code>
+                <div class="where-actions">
+                  <span class="mini">Copy</span>
+                  <span class="mini mini-send" data-press="2 4">Send to game</span>
+                  <span class="picked s-show2 s-show4">Picked up by <b>mygame</b> · just now</span>
+                </div>
+              </div>
+              <div class="note s-show3">
+                <span class="who">owner</span> <span class="verdict">STILL BROKEN</span>
+                <p>the east flow is still square</p>
+                <span class="thumb" aria-hidden="true"><i></i></span>
+              </div>
+              <div class="note note-pass s-show4">
+                <span class="who">owner</span> <span class="verdict verdict-ok">PASSED</span>
+                <p>all three are round now</p>
+              </div>
+              <div class="verdicts">
+                <span class="v v-pass" data-press="4">✓ Passed</span>
+                <span class="v v-fail" data-press="3">✕ Still broken</span>
+              </div>
+            </div>
+          </section>
+
+          <!-- the game -->
+          <section class="pane pane-game" aria-label="Your game">
+            <header class="pane-head"><span class="dot"></span>MyGame · dev console on</header>
+            <div class="game">
+              <svg class="world" viewBox="0 0 400 300" preserveAspectRatio="xMidYMid slice" role="img" aria-label="A sketch of a volcano at dusk with lava flows running down its slope">
+                <defs>
+                  <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0" class="sky-a"/>
+                    <stop offset="1" class="sky-b"/>
+                  </linearGradient>
+                  <linearGradient id="lava" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0" stop-color="#ffd27a"/>
+                    <stop offset="1" stop-color="#ff5a1f"/>
+                  </linearGradient>
+                </defs>
+                <rect class="sky" width="400" height="300" fill="url(#sky)"/>
+                <circle class="sun" cx="318" cy="92" r="20"/>
+                <path class="ridge-far" d="M0 196 L60 170 L120 184 L190 150 L250 176 L320 158 L400 180 L400 300 L0 300 Z"/>
+                <path class="volcano" d="M40 300 L168 112 L186 104 L206 106 L226 116 L360 300 Z"/>
+                <path class="crater" d="M168 112 Q187 122 226 116 L206 106 L186 104 Z"/>
+                <g class="flows" fill="url(#lava)">
+                  <path d="M184 112 C176 150 160 182 150 214 C147 224 140 226 138 218 C140 192 160 150 176 112 Z"/>
+                  <path d="M196 114 C198 160 196 196 192 236 C191 246 182 246 182 236 C184 196 186 156 188 114 Z"/>
+                  <path class="tip-square" d="M209 112 C223 150 238 182 247 218 L269 211 C256 176 234 142 220 110 Z"/>
+                  <path class="tip-round" d="M209 112 C223 150 238 182 247 216 C251 232 273 226 269 211 C256 176 234 142 220 110 Z"/>
+                </g>
+                <g class="glow" aria-hidden="true">
+                  <circle cx="143" cy="219" r="9"/><circle cx="187" cy="240" r="9"/><circle class="glow-east" cx="259" cy="222" r="9"/>
+                </g>
+                <circle class="mark" cx="258" cy="214" r="18"/>
+                <g class="player">
+                  <path d="M0 -14 L9 8 L0 3 L-9 8 Z"/>
+                </g>
+              </svg>
+              <div class="console">
+                <p class="s1 s3">polling the desk… nothing queued</p>
+                <p class="s2 s4"><span class="p">&gt;</span> /goto 1240 -380 42.5 yaw 90; /time 17:30</p>
+              </div>
+              <span class="flash" aria-hidden="true"></span>
+            </div>
+          </section>
+        </div>
+
+        <figcaption id="stage-caption">
+          <span class="cap s-show1">The agent finishes a fix and files a <b>check</b>: what changed, what correct looks like, and the game's own command that takes you there.</span>
+          <span class="cap s-show2">You press <b>Send to game</b>. The game polls the desk, runs the command, and you are standing at the flow at 17:30.</span>
+          <span class="cap s-show3">The east flow still ends square. You answer <b>Still broken</b> and paste a screenshot. The agent's next prompt starts with that line.</span>
+          <span class="cap s-show4">The fix lands, the plan step is ticked, the check goes back to you. Agents can't mark anything passed. <b>Only you can.</b></span>
+        </figcaption>
+        <p class="stage-note">An illustration. The desk card, tool calls and hook lines use Pair Desk's real wording; the game is a sketch.</p>
+      </figure>
+    </section>
+
+    <section class="band" id="desk" aria-labelledby="desk-title">
+      <div class="band-head">
+        <h2 id="desk-title">Everything is on one desk, and it's live</h2>
+        <p class="intro">Checks, reports, plans, the backlog and the handoff live in one place for every game you work on. A comment, verdict, plan tick or game report shows up in every open tab within a second.</p>
+      </div>
+      <figure class="viewer">
+        <div class="viewer-bar">
+          <div class="views" role="group" aria-label="Show the desk's">
+            <button type="button" data-view="triage" aria-pressed="true">Triage</button>
+            <button type="button" data-view="backlog" aria-pressed="false">Backlog</button>
+            <button type="button" data-view="handoff" aria-pressed="false">Handoff</button>
+            <button type="button" data-view="failed" aria-pressed="false">Still broken</button>
+          </div>
+          <div class="themes" role="group" aria-label="Desk theme">
+            <button type="button" data-theme="light" aria-pressed="false">Light</button>
+            <button type="button" data-theme="dark" aria-pressed="false">Dark</button>
+          </div>
+        </div>
+        <div class="window">
+          <picture>
+            <source media="(prefers-color-scheme: dark)" srcset="assets/shots/triage-dark.webp">
+            <img data-shot src="assets/shots/triage-light.webp" width="1360" height="820" alt="The triage list with a check waiting for the owner; the open check shows its fields, description and a finished plan.">
+          </picture>
+        </div>
+        <figcaption id="viewer-caption">Triage: what waits for you comes first. The open check carries its plan, ticked as commits landed.</figcaption>
+      </figure>
+      <p class="shot-note">Real captures of Pair Desk 1.13.0 with its sample desk (<code>scripts/demo-desk.py</code>), taken headless at 1360 × 820.</p>
+    </section>
+
+    <section class="band" id="features" aria-labelledby="features-title">
+      <div class="band-head">
+        <h2 id="features-title">Made for the way agents actually work</h2>
+        <p class="intro">Agents forget everything between sessions. The desk remembers: what you reported, what failed, where work stopped and what not to try again.</p>
+      </div>
+      <dl class="spec">
+        <div><dt>Checks with a place</dt><dd>Every check carries the game's own console commands, one place each, with a label. <em>Copy</em> or <em>Send to game</em> per command; the desk shows when the game picked it up.</dd></div>
+        <div><dt>Plans before code</dt><dd>Agents write the plan on the issue before they start and tick each step as its commit lands. A check can't reach you while steps are still open.</dd></div>
+        <div><dt>A handoff that survives</dt><dd>One versioned document per project: state, where work stopped, what was verified, the next step and the traps. Every save is kept and diffable.</dd></div>
+        <div><dt>Backlog with sizes</dt><dd>Open work sorted by priority, then size, then area, in collapsible groups. Replaces the TODO file nobody keeps up to date.</dd></div>
+        <div><dt>Agents check first</dt><dd><code>auto_check</code> is the agent's queue: screenshots, logs, tests and builds. Only what needs your eyes moves to <em>To check</em>.</dd></div>
+        <div><dt>Builds stamped on checks</dt><dd>A build script publishes the current build; every waiting check records which build it was handed over in, with <em>Open folder</em> and <em>Run</em>.</dd></div>
+        <div><dt>Merge and group</dt><dd>Duplicate reports merge into one issue with their history; related work groups under a parent with child progress. The desk proposes groups, you decide.</dd></div>
+        <div><dt>Search that ranks</dt><dd>Full-text search over titles, details, bodies and comments with stemming and phrases, falling back to substrings for code names like <code>WorldStore</code>.</dd></div>
+        <div><dt>Keyboard first</dt><dd><kbd>j</kbd> <kbd>k</kbd> to move, <kbd>s</kbd> to send to the game, <kbd>p</kbd> passed, <kbd>f</kbd> still broken. After <em>Passed</em> the next check opens, so a queue goes fast.</dd></div>
+        <div><dt>Copy as prompt</dt><dd>Copy an issue with its context as Markdown and paste it into any coding agent, desk integration or not.</dd></div>
+        <div><dt>Backup and transfer</dt><dd>One-zip backup while the desk runs, verified restore, and export of selected topics with their full history and attachments.</dd></div>
+        <div><dt>Share across PCs</dt><dd>Optional: synchronize chosen projects through a data branch in their own Git repository. Each PC works offline; code branches are never touched.</dd></div>
+      </dl>
+    </section>
+
+    <section class="band" id="hooks" aria-labelledby="hooks-title">
+      <div class="split">
+        <div class="prose">
+          <h2 id="hooks-title">Agents hear you on their next prompt</h2>
+          <p>At session start the agent gets one line for the project linked to its folder, plus the handoff's next step and traps. Before every prompt it gets what you did since it last looked: comments, verdicts, new reports and status changes, at most twelve lines, newest first.</p>
+          <p>In Claude Code the desk can also push straight into a running session through a channel, so an idle agent sees your verdict right away.</p>
+          <p>When several agents share a folder, one of them should answer you. Name a lead client per project, and delegated subagents work from their brief instead of reacting to the owner.</p>
+        </div>
+        <div class="term-card" role="group" aria-label="What the agent sees">
+          <div class="term-bar" aria-hidden="true"><span></span><span></span><span></span></div>
+<pre><code><span class="c"># at session start</span>
+Pair Desk (MyGame): 3 new reports, 2 failed checks,
+14 waiting for the owner, 1 auto_check waiting for
+agent verification (screenshots, logs, tests)
+Pair Desk handoff v12 (claude, 2026-11-04 09:12 UTC):
+- <span class="k">Next step:</span> damp the harbor docking spring in rain
+- <span class="k">Traps:</span> buoyancy runs at 50 Hz; never test at 144
+
+<span class="c"># before the next prompt</span>
+Pair Desk (MyGame): owner activity since this session
+last looked, newest first:
+- MG-4 owner: <span class="bad">STILL BROKEN</span> (2 min ago): "the east
+  flow is still square"
+- MG-9 new report from game (5 min ago): Stuck in the
+  rock near the harbor
+- MG-2 owner: <span class="good">PASSED</span> (12 min ago)</code></pre>
+        </div>
+      </div>
+    </section>
+
+    <section class="band" id="game" aria-labelledby="game-title">
+      <div class="split split-rev">
+        <div class="term-card" role="group" aria-label="The game integration">
+          <div class="term-bar" aria-hidden="true"><span></span><span></span><span></span></div>
+<pre><code><span class="c"># F12 in the game: file a report with the spot</span>
+POST /api/projects/mygame/issues
+{ <span class="k">"title"</span>: <span class="s">"Stuck in the rock near the harbor"</span>,
+  <span class="k">"source"</span>: <span class="s">"game"</span>,
+  <span class="k">"location"</span>: { <span class="k">"command"</span>: <span class="s">"/goto 1240 12 -380 yaw 90"</span> },
+  <span class="k">"attachments"</span>: [{ <span class="k">"data_base64"</span>: <span class="s">"iVBORw0…"</span> }] }
+
+<span class="c"># every 2 s while the dev console is on</span>
+GET /api/projects/mygame/commands/next?client=mygame
+<span class="good">200</span> { <span class="k">"command"</span>: <span class="s">"/goto 1240 -380 42.5 yaw 90"</span> }
+<span class="dim">204   nothing queued</span></code></pre>
+        </div>
+        <div class="prose">
+          <h2 id="game-title">Your game, any engine</h2>
+          <p>Pair Desk knows nothing about engines. A location is just your game's own console command: a teleport, the time of day, the weather, a seed for generated worlds.</p>
+          <p>Teach the game two small calls and the loop closes. A key press files a bug with a screenshot and the exact spot. While the dev console is on, the game polls for queued commands and runs them as if you typed them. Commands are delivered once and expire after ten minutes, so a later start never replays an old teleport.</p>
+          <p>When the desk isn't running, the requests just fail to connect; the game backs off quietly and never blocks play.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="band" id="agents" aria-labelledby="agents-title">
+      <div class="band-head">
+        <h2 id="agents-title">One install for every agent you use</h2>
+        <p class="intro">The installer finds the tools on your PATH, shows the exact steps for each, and asks before it runs them. It only touches its own entries, backs up every config file first, and <code>uninstall</code> removes exactly what it added.</p>
+      </div>
+      <ul class="agents">
+        <li><h3>Claude Code</h3><p>The official plugin: MCP server, skills, session and prompt hooks, and the live channel.</p></li>
+        <li><h3>Codex</h3><p>MCP server and SessionStart and UserPromptSubmit hooks in <code>config.toml</code>, plus skills.</p></li>
+        <li><h3>opencode</h3><p>MCP server, a small plugin that adds the desk summary to the system prompt, plus skills.</p></li>
+        <li><h3>Google Antigravity</h3><p>A native <code>agy</code> plugin with MCP, session and pre-invocation hooks and skills.</p></li>
+        <li><h3>Meta Muse Code</h3><p>MCP server and session and prompt hooks in Muse's settings, plus shared skills.</p></li>
+      </ul>
+    </section>
+
+    <section class="band trio" aria-label="Local, private and yours">
+      <article>
+        <h2>Local by default</h2>
+        <p>One Python 3.11+ standard-library server that listens on <code>127.0.0.1</code> only. Requests from other machines, other <code>Host</code> names or other web pages get <code>403</code>, which also stops DNS rebinding.</p>
+      </article>
+      <article>
+        <h2>No build, no CDN, no telemetry</h2>
+        <p>A plain HTML and JavaScript UI under a strict Content Security Policy. No account, nothing phones home. Git sharing stays off until you configure it.</p>
+      </article>
+      <article>
+        <h2>One folder is your desk</h2>
+        <p>A SQLite file and your screenshots in one data folder. Upgrades migrate in place and never rewrite or remove anything; older versions keep working on a migrated file.</p>
+      </article>
+    </section>
+
+    <section class="band install" id="install" aria-labelledby="install-title">
+      <div class="band-head">
+        <h2 id="install-title">Get Pair Desk</h2>
+        <p class="intro">You need Python 3.11 or newer. <span data-release="latest" data-field="found" hidden>The newest release is <strong data-release="latest" data-field="version"></strong>, from <span data-release="latest" data-field="date"></span>.</span></p>
+      </div>
+      <div class="dl-grid">
+        <div class="dl">
+          <h3>One command</h3>
+          <div class="tabs" role="tablist" aria-label="Install with">
+            <button type="button" role="tab" id="t-uvx" aria-controls="p-uvx" aria-selected="true">uv</button>
+            <button type="button" role="tab" id="t-pipx" aria-controls="p-pipx" aria-selected="false" tabindex="-1">pipx</button>
+            <button type="button" role="tab" id="t-sh" aria-controls="p-sh" aria-selected="false" tabindex="-1">macOS, Linux</button>
+            <button type="button" role="tab" id="t-ps" aria-controls="p-ps" aria-selected="false" tabindex="-1">Windows</button>
+          </div>
+          <div class="tab-panels">
+<pre role="tabpanel" id="p-uvx" aria-labelledby="t-uvx"><code>uvx --from git+https://github.com/rennerdo30/pair-desk pair-desk install</code></pre>
+<pre role="tabpanel" id="p-pipx" aria-labelledby="t-pipx"><code>pipx run --spec git+https://github.com/rennerdo30/pair-desk pair-desk install</code></pre>
+<pre role="tabpanel" id="p-sh" aria-labelledby="t-sh"><code>curl -fsSL https://raw.githubusercontent.com/rennerdo30/pair-desk/main/install.sh | sh</code></pre>
+<pre role="tabpanel" id="p-ps" aria-labelledby="t-ps"><code>irm https://raw.githubusercontent.com/rennerdo30/pair-desk/main/install.ps1 | iex</code></pre>
+          </div>
+          <p class="dl-sub">Add <code>--dry-run</code> to only see the steps, or name tools to limit it: <code>install claude codex</code>. The same command with <code>update</code> or <code>uninstall</code> does what it says. Read the scripts before you pipe them into a shell: <a href="https://github.com/rennerdo30/pair-desk/blob/main/install.sh">install.sh</a>, <a href="https://github.com/rennerdo30/pair-desk/blob/main/install.ps1">install.ps1</a>.</p>
+        </div>
+        <div class="dl">
+          <h3>Then start the desk</h3>
+<pre><code><span class="c"># the installer offers to link the repo you are in,</span>
+<span class="c"># then prints this command with its full path:</span>
+pair-desk serve --open        <span class="c"># http://127.0.0.1:8765/</span>
+
+<span class="c"># in Claude Code</span>
+/agent-pair-programming:serve</code></pre>
+          <p class="dl-sub">Create a project for your game with <em>New project…</em> in the desk (its issues become <code>MG-1</code>, <code>MG-2</code>, …), and your agents find it from the linked repository.</p>
+          <p class="dl-sub">Want to look around first? <code>python scripts/demo-desk.py --data &lt;empty folder&gt;</code> writes a desk with sample data.</p>
+          <p class="cta"><a class="btn" href="https://github.com/rennerdo30/pair-desk#readme">Read the guide</a> <a class="btn" href="https://github.com/rennerdo30/pair-desk/blob/main/CHANGELOG.md">Changelog</a></p>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="foot">
+    <p><img src="assets/pair-desk-icon.svg" width="20" height="20" alt=""> Pair Desk, a project by <a href="https://github.com/rennerdo30">rennerdo30</a>. MIT licensed.</p>
+    <p><a href="https://github.com/rennerdo30/pair-desk/blob/main/SECURITY.md">Security</a> <a href="https://github.com/rennerdo30/pair-desk/blob/main/CHANGELOG.md">Changelog</a> <a href="privacy.html">Privacy</a> <a href="https://github.com/rennerdo30/pair-desk/issues">Report an issue</a></p>
+  </footer>
+</body>
+</html>
