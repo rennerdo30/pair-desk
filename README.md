@@ -197,3 +197,8 @@ See [SECURITY.md](SECURITY.md) for details and how to report a vulnerability.
 ## License
 
 [MIT](LICENSE). Changes are listed in [CHANGELOG.md](CHANGELOG.md).
+
+Claude Code, Codex, opencode, Google Antigravity, Meta Muse Code, GitHub and the other product names
+mentioned here are trademarks of their respective owners. Pair Desk is an independent open-source
+project and is not affiliated with, sponsored or endorsed by any of them; the names only say which
+tools it works with.

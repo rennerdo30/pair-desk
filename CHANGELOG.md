@@ -8,6 +8,9 @@ and the project uses [Semantic Versioning](https://semver.org/). The version liv
 
 ### Documentation
 
+- Trademark and non-affiliation notice for the third-party tool names in the README and on the
+  website (PD-23).
+
 - The README is now a short front page: what Pair Desk does, how it works, features, install,
   quick start, the game integration and the security model, with fresh 1.13.0 screenshots. The
   reference sections moved unchanged into `docs/install.md`, `docs/web-ui.md`, `docs/api.md`,
