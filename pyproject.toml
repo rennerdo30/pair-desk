@@ -35,7 +35,7 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/rennerdo30/pair-desk"
+Homepage = "https://pair-desk.renner.dev"
 Repository = "https://github.com/rennerdo30/pair-desk"
 Issues = "https://github.com/rennerdo30/pair-desk/issues"
 Changelog = "https://github.com/rennerdo30/pair-desk/blob/main/CHANGELOG.md"
