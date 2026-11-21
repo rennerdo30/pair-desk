@@ -35,7 +35,7 @@ What it runs and touches:
 | Claude Code | only the official plugin commands: `claude plugin marketplace add rennerdo30/pair-desk`, `claude plugin marketplace update agent-pair-programming`, `claude plugin install agent-pair-programming@agent-pair-programming` |
 | Codex | `integrations/codex/install.py`: a `pair-desk` MCP server and SessionStart and UserPromptSubmit hooks in `~/.codex/config.toml` (backed up first; nothing else in the file changes), and three skills in `~/.agents/skills/` |
 | opencode | `integrations/opencode/install.py`: a `pair-desk` MCP server in `~/.config/opencode/opencode.json(c)` (backed up first), a small plugin in `~/.config/opencode/plugins/`, and the same skills |
-| Google Antigravity (`antigravity`, CLI `agy`) | `integrations/antigravity/install.py`: an owned native plugin in `~/.gemini/config/plugins/pair-desk/` with MCP, session and model-invocation hooks, and three plugin skills |
+| Google Antigravity (`antigravity`, CLI `agy`) | `integrations/antigravity/install.py`: an owned native plugin in `~/.gemini/config/plugins/pair-desk/`, `$GEMINI_HOME`, and any T3 Code isolated Antigravity profiles under `~/.t3/userdata/providers/antigravity/*/config/plugins/pair-desk/`, with MCP, session and model-invocation hooks, and three plugin skills |
 | Meta Muse Code (`muse`) | `integrations/muse/install.py`: MCP and session/prompt hooks in `~/.config/muse/settings.json` (backed up first), and shared skills in `~/.agents/skills/` |
 
 The agent integrations run Pair Desk by absolute path, so they need a copy that stays. Run from a git
@@ -161,13 +161,15 @@ python desk.py update antigravity muse --yes
 python desk.py uninstall antigravity muse --yes
 ```
 
-**Antigravity:** detection looks for `agy`, not the IDE launcher. Its native plugin contains
-`plugin.json`, `mcp_config.json`, `hooks.json`, and the three Pair Desk skills. `SessionStart`
-injects the linked project's summary and handoff; `PreInvocation` delivers new owner activity
-before the next model call. The hook translates native `workspacePaths`/`conversationId` input
-to Pair Desk's context lookup and returns `injectSteps`. It uses the first workspace path.
-Restart agy and inspect `agy plugin list`, `/mcp` and `/hooks`; approve tool calls through your
-existing policy. The installer adds no permission grants.
+**Antigravity:** detection looks for `agy` (not the IDE launcher), an existing `~/.gemini/config`,
+an active `$GEMINI_HOME`, and T3 Code's isolated Antigravity profiles under
+`~/.t3/userdata/providers/antigravity/*/config`. Each discovered profile gets its own native plugin
+containing `plugin.json`, `mcp_config.json`, `hooks.json`, and the three Pair Desk skills.
+`SessionStart` injects the linked project's summary and handoff; `PreInvocation` delivers new owner
+activity before the next model call. The hook translates native `workspacePaths`/`conversationId`
+input to Pair Desk's context lookup and returns `injectSteps`. It uses the first workspace path.
+Restart `agy` (or start a new T3 Code thread) and inspect `agy plugin list`, `/mcp` and `/hooks`;
+approve tool calls through your existing policy. The installer adds no permission grants.
 
 **Muse Code:** the installer merges `mcp_servers.pair-desk`, `hooks.SessionStart`, and
 `hooks.UserPromptSubmit` into `$XDG_CONFIG_HOME/muse/settings.json` (default
@@ -192,8 +194,9 @@ Antigravity uninstall removes the active manifest, MCP and hooks, and leaves ine
 backups and an ownership marker so it can be reinstalled. Neither integration wakes an idle
 agent: owner activity is delivered when the relevant hook next runs.
 
-Direct installers also accept `--desk` and `--python`; Antigravity accepts `--plugin-dir`, and
-Muse accepts `--config-dir`, `--skills-dir` and `--no-skills` for isolated setups.
+Direct installers also accept `--desk` and `--python`; Antigravity accepts `--plugin-dir` (repeatable,
+overriding auto-discovery), and Muse accepts `--config-dir`, `--skills-dir` and `--no-skills` for
+isolated setups.
 
 Validated on Windows with Antigravity CLI 1.3.5 (`agy plugin validate`) and Muse Code 1.4.7
 (native skill validation and required-MCP startup using the offline echo provider), on

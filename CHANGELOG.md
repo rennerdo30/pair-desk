@@ -4,13 +4,21 @@ All notable changes to Pair Desk. The format follows [Keep a Changelog](https://
 and the project uses [Semantic Versioning](https://semver.org/). The version lives in
 `pair_desk/__init__.py`, `.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json`.
 
-## [Unreleased]
+## [1.13.1] - 2026-11-22
+
+### Changed
+
+- Antigravity installer now automatically discovers standalone `~/.gemini/config`, active
+  `$GEMINI_HOME`, and T3 Code isolated Antigravity profiles under
+  `~/.t3/userdata/providers/antigravity/*/config` (including T3 Code-only setups without `agy` on
+  `PATH`), preflights all targets before writing, supports repeatable `--plugin-dir`, and writes
+  `version` in `plugin.json` so `agy plugin validate` passes without warnings (PD-24).
 
 ### Documentation
 
 - Trademark and non-affiliation notice for the third-party tool names in the README and on the
   website (PD-23).
-
+- Point package and plugin homepage links at `pair-desk.renner.dev`.
 - The README is now a short front page: what Pair Desk does, how it works, features, install,
   quick start, the game integration and the security model, with fresh 1.13.0 screenshots. The
   reference sections moved unchanged into `docs/install.md`, `docs/web-ui.md`, `docs/api.md`,

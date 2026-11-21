@@ -140,7 +140,7 @@ NOTES = {
     "codex": "  Codex runs a new or changed hook only after you trust it: start codex, run /hooks and trust the "
              "Pair Desk hooks.",
     "opencode": "  Restart opencode afterwards.",
-    "antigravity": "  Restart agy afterwards; review the Pair Desk plugin, /mcp and /hooks.",
+    "antigravity": "  Restart agy (or start a new T3 Code thread) afterwards; review the Pair Desk plugin, /mcp and /hooks.",
     "muse": "  Restart Muse Code afterwards; user hooks run from settings.json. Review /mcp.",
 }
 
@@ -317,15 +317,26 @@ def run(args, data_dir: Path, ask=_terminal_input) -> int:
         print(f"Pair Desk runs from {fwd(ctx.source)}, which is not a git clone; agent integrations will use a "
               f"copy in {fwd(ctx.app)}.")
     for tool in tools:
-        binary = BINARIES.get(tool, tool)
-        if not _which(binary):
-            print(f"{tool} is not installed ({binary} not found on PATH); skipping it." if binary != tool else
-                  f"{tool} is not installed (not found on PATH); skipping it.")
-            continue
+        targets: list[Path] = []
+        if tool == "antigravity":
+            from integrations.antigravity.install import discover_plugin_dirs
+            targets = discover_plugin_dirs(has_agy=bool(_which("agy")))
+            if not targets:
+                print("antigravity is not installed (agy not found on PATH and no Antigravity profiles found); "
+                      "skipping it.")
+                continue
+        else:
+            binary = BINARIES.get(tool, tool)
+            if not _which(binary):
+                print(f"{tool} is not installed ({binary} not found on PATH); skipping it." if binary != tool else
+                      f"{tool} is not installed (not found on PATH); skipping it.")
+                continue
         steps = plan_for(tool, action, ctx)
         print(f"{tool}: these steps will run:")
         for s in steps:
             print(f"  {s.describe(ctx.app, ctx.source)}")
+        for target in targets:
+            print(f"  target: {fwd(target)}")
         if action != "uninstall" and NOTES.get(tool):
             print(NOTES[tool])
         if not dry and not args.yes and not confirm(f"Run them for {tool}? [y/N] ", ask):

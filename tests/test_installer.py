@@ -47,7 +47,8 @@ class InstallerCase(TempDirCase):
         system = ([os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32")] if os.name == "nt"
                   else ["/usr/bin", "/bin"])
         env = {k: v for k, v in os.environ.items()
-               if k not in ("CODEX_HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "PAIR_DESK_PYTHON", "PAIR_DESK_APP")}
+               if k not in ("CODEX_HOME", "GEMINI_HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME",
+                            "PAIR_DESK_PYTHON", "PAIR_DESK_APP")}
         env.update(HOME=str(self.home), USERPROFILE=str(self.home), LOCALAPPDATA=str(self.home / "local"),
                    PAIR_DESK_DATA=str(self.data), FAKE_LOG=str(self.log),
                    PATH=os.pathsep.join([str(self.bin), os.path.dirname(sys.executable), *system]))
@@ -261,6 +262,36 @@ class NativeToolsTest(InstallerCase):
         self.assertEqual(code, 0, out)
         self.assertIn("agy not found on PATH", out)
         self.assertNotIn("antigravity: these steps will run", out)
+
+    def test_antigravity_installs_and_uninstalls_t3_profiles_with_or_without_agy(self):
+        t3_cfg = self.home / ".t3" / "userdata" / "providers" / "antigravity" / "abc123" / "config"
+        t3_cfg.mkdir(parents=True)
+        t3_plugin = t3_cfg / "plugins" / "pair-desk"
+        default_plugin = self.home / ".gemini" / "config" / "plugins" / "pair-desk"
+
+        # Without agy on PATH: installs only into the T3 Code profile
+        code, out = self.run_desk("install", "antigravity", "--yes", "--app-dir", str(self.app), tools=())
+        self.assertEqual(code, 0, out)
+        self.assertTrue((t3_plugin / "plugin.json").is_file())
+        self.assertFalse(default_plugin.exists())
+        self.assertIn("target:", out)
+
+        code, out = self.run_desk("uninstall", "antigravity", "--yes", "--app-dir", str(self.app), tools=())
+        self.assertEqual(code, 0, out)
+        self.assertFalse((t3_plugin / "plugin.json").exists())
+        self.assertFalse(self.app.exists())
+
+        # With agy on PATH: installs into both standalone ~/.gemini and the T3 Code profile
+        code, out = self.run_desk("install", "antigravity", "--yes", "--app-dir", str(self.app), tools=("agy",))
+        self.assertEqual(code, 0, out)
+        self.assertTrue((default_plugin / "plugin.json").is_file())
+        self.assertTrue((t3_plugin / "plugin.json").is_file())
+
+        code, out = self.run_desk("uninstall", "antigravity", "--yes", "--app-dir", str(self.app), tools=("agy",))
+        self.assertEqual(code, 0, out)
+        self.assertFalse((default_plugin / "plugin.json").exists())
+        self.assertFalse((t3_plugin / "plugin.json").exists())
+        self.assertFalse(self.app.exists())
 
 
 if __name__ == "__main__":

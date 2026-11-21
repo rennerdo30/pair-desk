@@ -15,7 +15,7 @@ from helpers import ROOT, TempDirCase
 from integrations import common, installer, native
 from integrations.antigravity import install as agy
 from integrations.muse import install as muse
-from pair_desk import cli
+from pair_desk import VERSION, cli
 from pair_desk.context import save_link
 from pair_desk.store import Store
 
@@ -49,6 +49,8 @@ class NativeInstallTest(TempDirCase):
         code, out = self.antigravity()
         self.assertEqual(code, 0, out)
         files = {name: (self.plugin / name).read_bytes() for name in agy.FILES}
+        manifest = json.loads(files["plugin.json"])
+        self.assertEqual(manifest["version"], VERSION)
         server = json.loads(files["mcp_config.json"])["mcpServers"]["pair-desk"]
         self.assertEqual(server["command"], sys.executable)
         self.assertEqual(server["args"], [common.fwd(common.DESK_PY), "mcp"])
@@ -125,6 +127,60 @@ class NativeInstallTest(TempDirCase):
         server = json.loads(server_path.read_text())["mcpServers"]["pair-desk"]
         self.assertTrue(server["disabled"])
         self.assertEqual(server["env"]["CUSTOM"], "preserved")
+
+    def test_antigravity_multi_target_install_uninstall_and_atomic_preflight(self):
+        first = self.tmp / "p1" / "pair-desk"
+        second = self.tmp / "p2" / "pair-desk"
+        foreign = self.tmp / "p3" / "pair-desk"
+        foreign.mkdir(parents=True)
+        (foreign / "plugin.json").write_text('{"name":"foreign"}', encoding="utf-8")
+
+        # A failure in a later target must prevent writing earlier targets.
+        code, _ = quiet(agy.run, ["--plugin-dir", str(first), "--plugin-dir", str(foreign),
+                                  "--python", sys.executable])
+        self.assertEqual(code, 1)
+        self.assertFalse(first.exists())
+
+        code, out = quiet(agy.run, ["--plugin-dir", str(first), "--plugin-dir", str(second),
+                                    "--python", sys.executable])
+        self.assertEqual(code, 0, out)
+        for target in (first, second):
+            self.assertTrue((target / "plugin.json").is_file())
+            self.assertTrue((target / "skills" / "pair-desk" / "SKILL.md").is_file())
+        code, out = quiet(agy.run, ["--plugin-dir", str(first), "--plugin-dir", str(second),
+                                    "--python", sys.executable])
+        self.assertEqual(code, 0, out)
+        self.assertIn("Nothing to change", out)
+        code, out = quiet(agy.run, ["--plugin-dir", str(first), "--plugin-dir", str(second), "--uninstall"])
+        self.assertEqual(code, 0, out)
+        for target in (first, second):
+            self.assertFalse((target / "plugin.json").exists())
+
+    def test_antigravity_discovers_standalone_gemini_home_and_t3_profiles(self):
+        fake_home = self.tmp / "fake-home"
+        fake_home.mkdir()
+        self.assertEqual(agy.discover_plugin_dirs(home=fake_home, has_agy=False, env={}), [])
+
+        t3_root = fake_home / ".t3" / "userdata" / "providers" / "antigravity"
+        p1 = t3_root / "prof-a" / "config"
+        p1.mkdir(parents=True)
+        (t3_root / "prof-uninit").mkdir(parents=True)  # no config/ dir -> ignored
+        expected_t3 = p1 / "plugins" / "pair-desk"
+
+        # T3 profile discovered even without agy on PATH, without adding ~/.gemini
+        self.assertEqual(agy.discover_plugin_dirs(home=fake_home, has_agy=False, env={}), [expected_t3])
+
+        # GEMINI_HOME pointing to the same T3 profile deduplicates cleanly; standalone + custom GEMINI_HOME both appear
+        custom_gh = self.tmp / "custom-gemini"
+        (custom_gh / "config").mkdir(parents=True)
+        self.assertEqual(
+            agy.discover_plugin_dirs(home=fake_home, has_agy=True, env={"GEMINI_HOME": str(t3_root / "prof-a")}),
+            [fake_home / ".gemini" / "config" / "plugins" / "pair-desk", expected_t3],
+        )
+        self.assertEqual(
+            agy.discover_plugin_dirs(home=fake_home, has_agy=False, env={"GEMINI_HOME": str(custom_gh)}),
+            [custom_gh / "config" / "plugins" / "pair-desk", expected_t3],
+        )
 
     def test_muse_preserves_user_handler_appended_to_managed_group(self):
         self.muse()
